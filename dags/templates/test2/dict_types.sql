@@ -1,0 +1,1 @@
+select {{ti.xcom_pull(key="session").session_id}} as session_id, * from dict_types; 

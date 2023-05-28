@@ -1,0 +1,9 @@
+.vscode/
+.conda/
+.logs/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+logs/
+plugins/
+dist/
