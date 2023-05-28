@@ -1,16 +1,17 @@
 # Astro SDK extras project
 
-Version 0.0.1
-by [kol](skolchin@gmail.com)
+Version 0.0.1 by [kol](skolchin@gmail.com)
 
 I've been using [Apache Airflow](https://airflow.apache.org/docs/apache-airflow/stable/)
 as ETL tool for quite some time. Recently I came across
 [Astronomer's Astro SDK](https://docs.astronomer.io/astro)
-which, imho, very much simplifies data processig with Airflow providing
+which, imho, simplifies data processig with Airflow very much by providing
 functionality to easily load or save data,
-define custom transformations, transparent support of newest Dataset concept and so on.
+define custom transformations, adding transparent support of newest
+[Dataset](https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/datasets.html)
+concept, automatic lineage and so on.
 
-The goal of this project is to add some usefull features to this great products, such as:
+The goal of this project is to add some usefull features to these great products, such as:
 
 * ETL session concept
 * Simplified table processing routines
@@ -50,7 +51,7 @@ Create a DAG which opens a session, outputs session info to log and closes it:
 ``` python
 with DAG(...) as dag, ETLSession('source', 'target') as session:
     @dag.task
-    def print_session(session: Session):
+    def print_session(session: ETLSession):
         print(session)
     print_session(session)
 ```
