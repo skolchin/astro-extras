@@ -27,7 +27,7 @@ x-airflow-common:
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    AIRFLOW__CORE__DEFAULT_TIMEZONE: 'Europe/Moscow'
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: ${AIRFLOW_TIMEZONE:-}
     AIRFLOW__ASTRO_SDK__AUTO_ADD_INLETS_OUTLETS: 'true'
     AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: 'airflow\..* astro\..* .*\.ETLSession'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
@@ -48,8 +48,8 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-airflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
-      TZ: 'Europe/Moscow'
-      PGTZ: 'Europe/Moscow'
+      TZ: ${POSTGRES_TIMEZONE:-UTC}
+      PGTZ: ${POSTGRES_TIMEZONE:-UTC}
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
       - ./docker/setup_db.sql:/docker-entrypoint-initdb.d/10_setup_db.sql
