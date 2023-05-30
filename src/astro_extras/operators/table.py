@@ -163,28 +163,34 @@ def declare_tables(
     return [Table(t, conn_id=conn_id, metadata=Metadata(schema=schema)) for t in table_names]
 
 def transfer_tables(
-        group_id: str,
-        tables: Iterable[Union[str, Table]],
+        source_tables: Iterable[Union[str, Table]],
+        target_tables: Optional[Iterable[Union[str, Table]]] = None,
         mode: Optional[Literal['default', 'delta', 'full']] = 'default',
         source_conn_id: Optional[str] = None,
         destination_conn_id: Optional[str] = None,
+        group_id: Optional[str] = None,
         num_parallel: Optional[int] = 1,
         session: Union[XComArg, ETLSession, None] = None,
         **kwargs) -> TaskGroup:
 
-    with TaskGroup(group_id) as tg:
+    if target_tables and len(target_tables) != len(source_tables):
+        raise AirflowFailException(f'Source and target tables list size must be equal')
+
+    target_tables = target_tables or source_tables
+
+    with TaskGroup(group_id or 'transfer-tables', add_suffix_on_collision=True) as tg:
         ops_list = []
-        for t in tables:
+        for (source, target) in zip(source_tables, target_tables):
             op = TableTransfer(
-                source_table=full_table_name(t),
-                destination_table=full_table_name(t),
+                source_table=full_table_name(source),
+                destination_table=full_table_name(target),
                 source_conn_id=source_conn_id,
                 destination_conn_id=destination_conn_id,
                 mode=mode,
                 session=session,
                 **kwargs_with_datasets(kwargs=kwargs, 
-                                    input_datasets=ensure_table(t, source_conn_id), 
-                                    output_datasets=ensure_table(t, destination_conn_id)))
+                                    input_datasets=ensure_table(source, source_conn_id), 
+                                    output_datasets=ensure_table(target, destination_conn_id)))
             ops_list.append(op)
         schedule_ops(ops_list, num_parallel)
     return tg

@@ -7,10 +7,11 @@ from astro.sql.table import Table, Metadata
 from astro_extras import open_session, close_session, transfer_table, ETLSession
 
 with DAG(
-    dag_id='test2',
+    dag_id='print_session',
     start_date=pendulum.today('Europe/Moscow').add(days=-1),
     schedule=None,
     catchup=False,
+    tags=['test', 'session'],
 ) as dag, ETLSession('source_db', 'target_db') as session:
 
     @dag.task
