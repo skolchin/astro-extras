@@ -28,8 +28,8 @@ with DAG(
     tags=['test', 'table']
 ) as dag, ETLSession('source_db', 'target_db') as session:
 
-    input_tables = declare_tables(['dict_types', 'table_data'], 'source_db', 'public')
-    output_tables = declare_tables(['dict_types', 'table_data'], 'target_db', 'stage')
+    input_tables = declare_tables(['dict_types', 'table_data'], 'source_db')
+    output_tables = declare_tables(['stage.dict_types', 'stage.table_data'], 'target_db')
 
     transfer_tables(input_tables, output_tables, session=session)
 

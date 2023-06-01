@@ -215,7 +215,7 @@ def open_session(
             some_date between '{{ ti.xcom_pull(key="session").period_start }}'::timestamp
                           and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
 
-    See `.table.transfer_table` function for details on transfer operation.
+    See `transfer_table` function for details on transfer operation.
 
     Technically, sessions are stored in a `public.sessions` table. Table DDL (for Postgres):
 
@@ -277,7 +277,7 @@ def open_session(
         Table `test_table` must have the same structure in both databases, except
         that `session_id` field must be added to the target table as 1st column.
 
-        See `.table.transfer_table` function for details on transfer operation.
+        See `transfer_table` function for details on transfer operation.
     """
     
     assert (dag := dag or DagContext.get_current_dag())

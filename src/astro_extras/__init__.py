@@ -19,7 +19,6 @@ from .operators.table import (
 from .utils.utils import (
     get_table_template,
     split_table_name,
-    full_table_name,
     ensure_table,
     schedule_ops,
 )
