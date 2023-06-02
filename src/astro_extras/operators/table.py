@@ -166,7 +166,8 @@ def save_table(
         data: XComArg,
         table: Union[str, Table],
         conn_id: Optional[str] = None,
-        session: Optional[ETLSession] = None) -> XComArg:
+        session: Optional[ETLSession] = None,
+        fail_if_not_exist: Optional[bool] = True) -> XComArg:
     """ Saves a table into database """
 
     if isinstance(table, Table):
@@ -175,8 +176,13 @@ def save_table(
         task_id = f'save-{table}'
         table = ensure_table(table, conn_id)
 
+    conn_id = conn_id or table.conn_id
     @aql.dataframe(if_exists='append', conn_id=conn_id, task_id=task_id)
     def _save_data(data: pd.DataFrame, session: ETLSession):
+        if fail_if_not_exist:
+            db = create_database(conn_id, table)
+            if not db.table_exists(table):
+                raise AirflowFailException(f'Table {table.name} does not exist')
         session = ensure_session(session)
         if session and 'session_id' not in data.columns:
             data.insert(0, 'session_id', session.session_id)

@@ -5,16 +5,24 @@
 
 import os
 import pytest
+from pytest_docker.plugin import get_cleanup_command
 from test_utils import *
-# from pytest_docker import docker_cleanup
+
+def pytest_addoption(parser):
+    parser.addoption('--keep', action='store_true', default=False, 
+                     help='Keep Airflow docker running after test')
+
+@pytest.fixture(scope="session")
+def keep_docker(pytestconfig):
+    return pytestconfig.getoption('keep')
 
 @pytest.fixture(scope="session")
 def docker_compose_command():
     return "docker compose"
 
-# @pytest.fixture(scope="session")
-# def docker_cleanup():
-#     return None
+@pytest.fixture(scope="session")
+def docker_cleanup(keep_docker):
+    return get_cleanup_command() if not keep_docker else None
 
 @pytest.fixture(scope="session")
 def docker_compose_file(pytestconfig):
@@ -22,22 +30,33 @@ def docker_compose_file(pytestconfig):
 
 @pytest.fixture(scope="session")
 def docker_compose_project_name():
-    return 'astro-extras'
+    return 'astro-extras-test'
+
+@pytest.fixture(scope="session")
+def env(pytestconfig):
+    """ Reads an .env file from root directory and parses it to {<var>:<val>} dict """
+    file_name = os.path.join(str(pytestconfig.rootdir), '.env')
+    result = {}
+    with open(file_name, 'rt') as fp:
+        for line in fp.readlines():
+            var, val = line.split('=')
+            result[var.strip()] = val.strip()
+    return result
 
 @pytest.fixture(scope='session')
-def airflow_credentials(pytestconfig):
-    credentials = get_credentials(str(pytestconfig.rootdir))
-    return (credentials.get('_AIRFLOW_WWW_USER_USERNAME', 'airflow'),
-           credentials.get('_AIRFLOW_WWW_USER_PASSWORD', ''))
+def airflow_credentials(airflow, env):
+    """ Airflow login credentials from .env file. Also, starts Airflow docker """
+    return (env.get('_AIRFLOW_WWW_USER_USERNAME', 'airflow'),
+           env.get('_AIRFLOW_WWW_USER_PASSWORD', ''))
 
 @pytest.fixture(scope='session')
-def db_credentials(pytestconfig):
-    credentials = get_credentials(str(pytestconfig.rootdir))
-    return (credentials.get('POSTGRES_USER', 'postgres'),
-           credentials.get('POSTGRES_PASSWORD', ''))
+def db_credentials(env):
+    """ Database login credentials from .env file """
+    return (env.get('POSTGRES_USER', 'postgres'), env.get('POSTGRES_PASSWORD', ''))
 
 @pytest.fixture(scope="session")
 def airflow(docker_ip, docker_services):
+    """ Starts airflow docker stack and waits for webserver to be ready """
     logger.info('Waiting for Airflow docker to start')
     port = docker_services.port_for("airflow-webserver", 8080)
     url = f"http://{docker_ip}:{port}/health"
@@ -48,8 +67,10 @@ def airflow(docker_ip, docker_services):
 
 @pytest.fixture(scope='session')
 def source_db(db_credentials, docker_ip, docker_services):
+    """ Makes a source database connection as SQLA engine """
     return get_db_engine('source_db', db_credentials, docker_ip, docker_services)
 
 @pytest.fixture(scope='session')
 def target_db(db_credentials, docker_ip, docker_services):
+    """ Makes a target database connection as SQLA engine """
     return get_db_engine('target_db', db_credentials, docker_ip, docker_services)

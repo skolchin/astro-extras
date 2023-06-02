@@ -5,7 +5,7 @@ Version 0.0.1 by [kol](skolchin@gmail.com)
 I've been using [Apache Airflow](https://airflow.apache.org/docs/apache-airflow/stable/)
 as ETL tool for quite some time. Recently I came across
 [Astronomer's Astro SDK](https://docs.astronomer.io/astro)
-which, imho, simplifies data processig with Airflow very much by providing
+which simplifies data processig with Airflow very much by providing
 functionality to easily load or save data,
 define custom transformations, adding transparent support of newest
 [Dataset](https://airflow.apache.org/docs/apache-airflow/stable/authoring-and-scheduling/datasets.html)
@@ -114,4 +114,8 @@ cd ./tests
 pytest -s -v
 ```
 
-Note that testing **requires** pre-built package and a docker software installed.
+This will build docker image and start `astro-extras-test` stack using `docker-compose-test.yml` file.
+The packaget must be built beforehand.
+
+After the tests complete, test stack will be shot down, but you may add `--keep` option
+in order to keep it running.

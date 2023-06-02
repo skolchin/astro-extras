@@ -1,7 +1,7 @@
 # Astro SDK Extras project
 # (c) kol, 2023
 
-""" ETL session tests """
+""" ETL session unit tests """
 
 from dateutil.parser import isoparse
 from test_utils import run_dag, logger
@@ -22,10 +22,21 @@ def compare_period(session_period, expected_period):
     x = tuple([isoparse(t) for t in expected_period])
     return p == x
 
-def test_session_simple(airflow, docker_ip, docker_services, airflow_credentials, target_db):
-    logger.info(f'Testing simple session opening')
+def test_session_simple(docker_ip, docker_services, airflow_credentials, target_db):
+    logger.info(f'Testing session opening')
     prev_session_id = get_last_session_id(target_db)
     result = run_dag('test-session', docker_ip, docker_services, airflow_credentials)
+    assert result == 'success'
+    new_session = get_last_session(target_db)
+    assert new_session
+    logger.info(f'Latest session: {new_session}')
+    assert new_session['session_id'] > prev_session_id
+    assert new_session['status'] == 'success'
+
+def test_session_ctx(docker_ip, docker_services, airflow_credentials, target_db):
+    logger.info(f'Testing session opening using context manager semantics')
+    prev_session_id = get_last_session_id(target_db)
+    result = run_dag('test-session-ctx', docker_ip, docker_services, airflow_credentials)
     assert result == 'success'
     new_session = get_last_session(target_db)
     assert new_session
