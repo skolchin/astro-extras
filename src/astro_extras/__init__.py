@@ -16,8 +16,12 @@ from .operators.table import (
     declare_tables,
     transfer_tables,
 )
+from .operators.direct import (
+    run_sql_template,
+    run_sql_templates,
+)
 from .utils.utils import (
-    get_table_template,
+    get_template_file,
     split_table_name,
     ensure_table,
     schedule_ops,

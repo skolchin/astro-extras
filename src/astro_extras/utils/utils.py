@@ -12,18 +12,18 @@ from astro.sql.table import Table, Metadata
 
 from typing import Union, Tuple, Optional, List
 
-def get_table_template(table: str, ext: Optional[str] = '.sql', dag: Optional[DAG] = None) -> Optional[str]:
-    """ Returns name of template file for given table
+def get_template_file(template: str, ext: Optional[str] = '.sql', dag: Optional[DAG] = None) -> str:
+    """ Returns reference to template file, if one exists.
     
-    This function looks up for a file `<table><ext>` in `./templates/<dag_id>` folder
+    This function looks up for a template file in `./templates/<dag_id>` folder
     under directory set as DAGS_HOME in Airflow config (usually `./dags`).
 
-    Such files are used as templates for SQL operations, html reporting and so on.
+    Templates are used for SQL operations, html reporting and so on.
     They consists of some plain-text content mixed with Jinja macros denoted by `{{}}` brackets,
     which are automatically substituted by Airflow upon template execution.
 
     Args:
-        table:  A table or any other object name
+        template:  Template name (e.g. table name or reporting object) without any extension
         ext:    Template file extension, `.sql` by default
         dag:    Optional DAG context
 
@@ -49,10 +49,9 @@ def get_table_template(table: str, ext: Optional[str] = '.sql', dag: Optional[DA
 
     """
 
-    _, table = split_table_name(table)
     dag = dag or DagContext.get_current_dag()
     ext = '.' + ext if not ext.startswith('.') else ext
-    rel_file_name = os.path.join('templates', dag.dag_id, table + ext)
+    rel_file_name = os.path.join('templates', dag.dag_id, template + ext)
     full_file_name = os.path.join(conf.get('core','dags_folder'), rel_file_name)
     return rel_file_name if os.path.exists(full_file_name) else None
 
@@ -89,4 +88,5 @@ def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> BaseOpe
     splits = list({k: [y[1] for y in g] \
         for k, g in groupby(enumerate(ops_list), lambda v: v[0] // (len(ops_list) // num_parallel))}.values())
     _ = [a.set_downstream(b) for g in splits for a, b in pairwise(g)]
+
     return [x[-1] for x in splits]
