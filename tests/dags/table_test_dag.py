@@ -11,7 +11,7 @@ from astro_extras import load_table, save_table
 
 with DAG(
     dag_id='test-table-load_save',
-    start_date=pendulum.today('Europe/Moscow').add(days=-1),
+    start_date=pendulum.today().add(days=-1),
     schedule=None,
     catchup=False,
 ) as dag:
@@ -30,7 +30,7 @@ with DAG(
 
 with DAG(
     dag_id='test-table-save_fail',
-    start_date=pendulum.today('Europe/Moscow').add(days=-1),
+    start_date=pendulum.today().add(days=-1),
     schedule=None,
     catchup=False,
 ) as dag:

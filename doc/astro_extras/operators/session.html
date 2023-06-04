@@ -240,11 +240,10 @@ def open_session(
     `{&#34;period&#34;: &#34;[&lt;period_start&gt;, &lt;period_end&gt;]&#34;}` parameter when DAG is started. 
     These fields can be used in data extraction queries to limit dataset like this:
 
-        select * from data_table where
-            some_date between &#39;{{ ti.xcom_pull(key=&#34;session&#34;).period_start }}&#39;::timestamp
-                          and &#39;{{ ti.xcom_pull(key=&#34;session&#34;).period_end }}&#39;::timestamp
-
-    See `transfer_table` function for details on transfer operation.
+        select * from data_table 
+        where some_date 
+            between &#39;{{ ti.xcom_pull(key=&#34;session&#34;).period_start }}&#39;::timestamp
+            and &#39;{{ ti.xcom_pull(key=&#34;session&#34;).period_end }}&#39;::timestamp
 
     Technically, sessions are stored in a `public.sessions` table. Table DDL (for Postgres):
 
@@ -256,7 +255,8 @@ def open_session(
             run_id text,
             started timestamptz not null,
             finished timestamptz,
-            status varchar(10) not null check (status in (&#39;running&#39;, &#39;success&#39;, &#39;error&#39;))
+            status varchar(10) not null 
+                check (status in (&#39;running&#39;, &#39;success&#39;, &#39;error&#39;))
         );
 
     Every table where the data is saved should have an extra `session_id` field 
@@ -306,7 +306,7 @@ def open_session(
         Table `test_table` must have the same structure in both databases, except
         that `session_id` field must be added to the target table as 1st column.
 
-        See `transfer_table` function for details on transfer operation.
+        See `astro_extras.operators.table.transfer_table` function for details on transfer operation.
     &#34;&#34;&#34;
     
     assert (dag := dag or DagContext.get_current_dag())
@@ -370,7 +370,8 @@ def get_current_session(context: Optional[Context] = None) -&gt; ETLSession:
     context = context or get_current_context()
     return context[&#39;ti&#39;].xcom_pull(key=&#39;session&#39;)
 
-def ensure_session(session: Union[ETLSession, XComArg, None], context: Optional[Context] = None) -&gt; ETLSession:
+def ensure_session(session: Optional[Union[ETLSession, XComArg]], 
+                   context: Optional[Context] = None) -&gt; ETLSession:
     &#34;&#34;&#34; Returns current session. If a placeholder object returned by `open_session` is passed in,
     retrieves actual session from XCom. 
     
@@ -396,31 +397,34 @@ def get_session_period(context: Optional[Context] = None) -&gt; Tuple[str, str]:
     &#34;&#34;&#34; Calculates ETL session loading period.
     
     This function is used when a new session is created. It recognizes a &#34;period&#34;
-    dagrun option, which must be set as two valid dates or datetimes considered
+    dagrun option, which must be provided as two valid dates or datetimes considered
     as lower and upper bound of loading period. If a date-only upper bound is used,
     it will be increased to hold entire day (see examples).
     
     If this option was not specified, loading period will be set to interval of
     `[data_interval_start, data_interval_end]` Airflow variables 
     (see https://docs.astronomer.io/learn/scheduling-in-airflow for details).
-    However, these dates will be converted to Airflow default timezone (as they are in UTC).
+    However, these dates will be converted to Airflow default timezone 
+    (as they are defined in UTC).
 
     Args:
         context:    DAG execution context (optional)
 
     Returns:
         Tuple of two datetimes indicating lower- and upper-bound of loading period,
-        converted to ISO-formatted strings (see `datetime.datetime.isoformat`).
+        converted to ISO-formatted strings (see `datetime.isoformat()`).
 
     Examples:
-        Examples of DAG run configuration options and conversion results:
+        Examples of DAG run configuration options and their conversion:
 
-        {&#34;period&#34;: &#34;[2023-05-01, 2023-05-31]&#34;} 
+        ```
+        {&#34;period&#34;: &#34;[2023-05-01, 2023-05-31]&#34;}
             -&gt; [&#34;2023-05-01T00:00:00&#34;, &#34;2023-06-01T00:00:00&#34;]
         {&#34;period&#34;: &#34;[2023-05-01, 2023-05-01]&#34;} 
             -&gt; [&#34;2023-05-01T00:00:00&#34;, &#34;2023-05-02T00:00:00&#34;]
         {&#34;period&#34;: &#34;[2023-05-01T12:00:00, 2023-05-01T14:00:00]&#34;} 
             -&gt; [&#34;2023-05-01T10:00:00&#34;, &#34;2023-05-01T14:00:00&#34;]
+        ```
 
     &#34;&#34;&#34;
     context = context or get_current_context()
@@ -433,7 +437,7 @@ def get_session_period(context: Optional[Context] = None) -&gt; Tuple[str, str]:
         if len(period) &lt; 2:
             raise AirflowFailException(&#39;Invalid period: two valid dates in YYYY-MM-DD format must be specified&#39;)
 
-        # If no time part is set in the upper period bound,
+        # If no time part is provided in the upper period bound,
         # consider this to be date-only and add 1 day to align to days&#39;end
         # For example, specifying period = [&#34;2023-05-01&#34;, &#34;2023-05-01&#34;] will be converted
         # to [&#34;2023-05-01 00:00:00&#34;, &#34;2023-05-02 00:00:00&#34;]
@@ -547,7 +551,8 @@ retrieves actual session from XCom. </p>
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def ensure_session(session: Union[ETLSession, XComArg, None], context: Optional[Context] = None) -&gt; ETLSession:
+<pre><code class="python">def ensure_session(session: Optional[Union[ETLSession, XComArg]], 
+                   context: Optional[Context] = None) -&gt; ETLSession:
     &#34;&#34;&#34; Returns current session. If a placeholder object returned by `open_session` is passed in,
     retrieves actual session from XCom. 
     
@@ -602,13 +607,14 @@ retrieves actual session from XCom. </p>
 <dd>
 <div class="desc"><p>Calculates ETL session loading period.</p>
 <p>This function is used when a new session is created. It recognizes a "period"
-dagrun option, which must be set as two valid dates or datetimes considered
+dagrun option, which must be provided as two valid dates or datetimes considered
 as lower and upper bound of loading period. If a date-only upper bound is used,
 it will be increased to hold entire day (see examples).</p>
 <p>If this option was not specified, loading period will be set to interval of
 <code>[data_interval_start, data_interval_end]</code> Airflow variables
 (see <a href="https://docs.astronomer.io/learn/scheduling-in-airflow">https://docs.astronomer.io/learn/scheduling-in-airflow</a> for details).
-However, these dates will be converted to Airflow default timezone (as they are in UTC).</p>
+However, these dates will be converted to Airflow default timezone
+(as they are defined in UTC).</p>
 <h2 id="args">Args</h2>
 <dl>
 <dt><strong><code>context</code></strong></dt>
@@ -616,15 +622,16 @@ However, these dates will be converted to Airflow default timezone (as they are 
 </dl>
 <h2 id="returns">Returns</h2>
 <p>Tuple of two datetimes indicating lower- and upper-bound of loading period,
-converted to ISO-formatted strings (see <code>datetime.datetime.isoformat</code>).</p>
+converted to ISO-formatted strings (see <code>datetime.isoformat()</code>).</p>
 <h2 id="examples">Examples</h2>
-<p>Examples of DAG run configuration options and conversion results:</p>
-<p>{"period": "[2023-05-01, 2023-05-31]"}
--&gt; ["2023-05-01T00:00:00", "2023-06-01T00:00:00"]
-{"period": "[2023-05-01, 2023-05-01]"}
--&gt; ["2023-05-01T00:00:00", "2023-05-02T00:00:00"]
-{"period": "[2023-05-01T12:00:00, 2023-05-01T14:00:00]"}
--&gt; ["2023-05-01T10:00:00", "2023-05-01T14:00:00"]</p></div>
+<p>Examples of DAG run configuration options and their conversion:</p>
+<pre><code>{&quot;period&quot;: &quot;[2023-05-01, 2023-05-31]&quot;}
+    -&gt; [&quot;2023-05-01T00:00:00&quot;, &quot;2023-06-01T00:00:00&quot;]
+{&quot;period&quot;: &quot;[2023-05-01, 2023-05-01]&quot;} 
+    -&gt; [&quot;2023-05-01T00:00:00&quot;, &quot;2023-05-02T00:00:00&quot;]
+{&quot;period&quot;: &quot;[2023-05-01T12:00:00, 2023-05-01T14:00:00]&quot;} 
+    -&gt; [&quot;2023-05-01T10:00:00&quot;, &quot;2023-05-01T14:00:00&quot;]
+</code></pre></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -633,31 +640,34 @@ converted to ISO-formatted strings (see <code>datetime.datetime.isoformat</code>
     &#34;&#34;&#34; Calculates ETL session loading period.
     
     This function is used when a new session is created. It recognizes a &#34;period&#34;
-    dagrun option, which must be set as two valid dates or datetimes considered
+    dagrun option, which must be provided as two valid dates or datetimes considered
     as lower and upper bound of loading period. If a date-only upper bound is used,
     it will be increased to hold entire day (see examples).
     
     If this option was not specified, loading period will be set to interval of
     `[data_interval_start, data_interval_end]` Airflow variables 
     (see https://docs.astronomer.io/learn/scheduling-in-airflow for details).
-    However, these dates will be converted to Airflow default timezone (as they are in UTC).
+    However, these dates will be converted to Airflow default timezone 
+    (as they are defined in UTC).
 
     Args:
         context:    DAG execution context (optional)
 
     Returns:
         Tuple of two datetimes indicating lower- and upper-bound of loading period,
-        converted to ISO-formatted strings (see `datetime.datetime.isoformat`).
+        converted to ISO-formatted strings (see `datetime.isoformat()`).
 
     Examples:
-        Examples of DAG run configuration options and conversion results:
+        Examples of DAG run configuration options and their conversion:
 
-        {&#34;period&#34;: &#34;[2023-05-01, 2023-05-31]&#34;} 
+        ```
+        {&#34;period&#34;: &#34;[2023-05-01, 2023-05-31]&#34;}
             -&gt; [&#34;2023-05-01T00:00:00&#34;, &#34;2023-06-01T00:00:00&#34;]
         {&#34;period&#34;: &#34;[2023-05-01, 2023-05-01]&#34;} 
             -&gt; [&#34;2023-05-01T00:00:00&#34;, &#34;2023-05-02T00:00:00&#34;]
         {&#34;period&#34;: &#34;[2023-05-01T12:00:00, 2023-05-01T14:00:00]&#34;} 
             -&gt; [&#34;2023-05-01T10:00:00&#34;, &#34;2023-05-01T14:00:00&#34;]
+        ```
 
     &#34;&#34;&#34;
     context = context or get_current_context()
@@ -670,7 +680,7 @@ converted to ISO-formatted strings (see <code>datetime.datetime.isoformat</code>
         if len(period) &lt; 2:
             raise AirflowFailException(&#39;Invalid period: two valid dates in YYYY-MM-DD format must be specified&#39;)
 
-        # If no time part is set in the upper period bound,
+        # If no time part is provided in the upper period bound,
         # consider this to be date-only and add 1 day to align to days&#39;end
         # For example, specifying period = [&#34;2023-05-01&#34;, &#34;2023-05-01&#34;] will be converted
         # to [&#34;2023-05-01 00:00:00&#34;, &#34;2023-05-02 00:00:00&#34;]
@@ -703,11 +713,11 @@ the call is performed implicitly.</p>
 are calculated either automatically or could be specified manually by adding
 <code>{"period": "[&lt;period_start&gt;, &lt;period_end&gt;]"}</code> parameter when DAG is started.
 These fields can be used in data extraction queries to limit dataset like this:</p>
-<pre><code>select * from data_table where
-    some_date between '{{ ti.xcom_pull(key="session").period_start }}'::timestamp
-                  and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
+<pre><code>select * from data_table 
+where some_date 
+    between '{{ ti.xcom_pull(key="session").period_start }}'::timestamp
+    and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
 </code></pre>
-<p>See <code>transfer_table</code> function for details on transfer operation.</p>
 <p>Technically, sessions are stored in a <code>public.sessions</code> table. Table DDL (for Postgres):</p>
 <pre><code>create table public.sessions(
     session_id serial not null primary key,
@@ -717,7 +727,8 @@ These fields can be used in data extraction queries to limit dataset like this:<
     run_id text,
     started timestamptz not null,
     finished timestamptz,
-    status varchar(10) not null check (status in ('running', 'success', 'error'))
+    status varchar(10) not null 
+        check (status in ('running', 'success', 'error'))
 );
 </code></pre>
 <p>Every table where the data is saved should have an extra <code>session_id</code> field
@@ -764,7 +775,7 @@ task sequence:</p>
 databases. Table <code>public.sessions</code> must exists in the target database.</p>
 <p>Table <code>test_table</code> must have the same structure in both databases, except
 that <code>session_id</code> field must be added to the target table as 1st column.</p>
-<p>See <code>transfer_table</code> function for details on transfer operation.</p></div>
+<p>See <code><a title="astro_extras.operators.table.transfer_table" href="table.html#astro_extras.operators.table.transfer_table">transfer_table()</a></code> function for details on transfer operation.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -793,11 +804,10 @@ that <code>session_id</code> field must be added to the target table as 1st colu
     `{&#34;period&#34;: &#34;[&lt;period_start&gt;, &lt;period_end&gt;]&#34;}` parameter when DAG is started. 
     These fields can be used in data extraction queries to limit dataset like this:
 
-        select * from data_table where
-            some_date between &#39;{{ ti.xcom_pull(key=&#34;session&#34;).period_start }}&#39;::timestamp
-                          and &#39;{{ ti.xcom_pull(key=&#34;session&#34;).period_end }}&#39;::timestamp
-
-    See `transfer_table` function for details on transfer operation.
+        select * from data_table 
+        where some_date 
+            between &#39;{{ ti.xcom_pull(key=&#34;session&#34;).period_start }}&#39;::timestamp
+            and &#39;{{ ti.xcom_pull(key=&#34;session&#34;).period_end }}&#39;::timestamp
 
     Technically, sessions are stored in a `public.sessions` table. Table DDL (for Postgres):
 
@@ -809,7 +819,8 @@ that <code>session_id</code> field must be added to the target table as 1st colu
             run_id text,
             started timestamptz not null,
             finished timestamptz,
-            status varchar(10) not null check (status in (&#39;running&#39;, &#39;success&#39;, &#39;error&#39;))
+            status varchar(10) not null 
+                check (status in (&#39;running&#39;, &#39;success&#39;, &#39;error&#39;))
         );
 
     Every table where the data is saved should have an extra `session_id` field 
@@ -859,7 +870,7 @@ that <code>session_id</code> field must be added to the target table as 1st colu
         Table `test_table` must have the same structure in both databases, except
         that `session_id` field must be added to the target table as 1st column.
 
-        See `transfer_table` function for details on transfer operation.
+        See `astro_extras.operators.table.transfer_table` function for details on transfer operation.
     &#34;&#34;&#34;
     
     assert (dag := dag or DagContext.get_current_dag())

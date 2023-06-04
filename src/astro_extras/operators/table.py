@@ -20,7 +20,8 @@ from astro.airflow.datasets import kwargs_with_datasets
 from typing import Union, Literal, Optional, Iterable, List
 
 from .session import ETLSession, ensure_session
-from ..utils.utils import get_template_file, ensure_table, schedule_ops
+from ..utils.utils import ensure_table, schedule_ops
+from ..utils.template import get_template_file
 
 class TableTransfer(GenericTransfer):
     """ Customized table transfer operator. Usually is used within `transfer_table` function """
@@ -106,7 +107,7 @@ def load_table(
     further processing.
 
     SQL templating is supported, e.g. if a template for given table was found, it
-    will be executed to get the data (see `astro_extras.utils.utils.get_template_file`).
+    will be executed to get the data (see `astro_extras.utils.template.get_template_file`).
 
     Please note that in order to operate even on modest volumes of data,
     intermediate XCom storage might be required. Easiest way to set it up is to use
@@ -211,7 +212,7 @@ def transfer_table(
     or transfer will fail or produce undesirable results.
 
     To limit data selection or customize fields, a SQL template could be 
-    created for the source table (see `astro_extras.utils.utils.get_template_file`). 
+    created for the source table (see `astro_extras.utils.template.get_template_file`).
     The template must ensure fields order and type compatibility with the target table.
     If a `ETLSession` is been used, a `session_id` field must also be manually added
     at proper place.
@@ -223,7 +224,8 @@ def transfer_table(
 
     then, this SQL template might be created as `source_data.sql` file:
 
-        select {{ti.xcom_pull(key="session").session_id}} as session_id, b, a from source_data;
+        select {{ti.xcom_pull(key="session").session_id}} as session_id, b, a 
+        from source_data;
 
     Args:
         source: Either a table name or a `Table` object which would be a data source.
@@ -257,11 +259,13 @@ def transfer_table(
         `XComArg` object
 
     Examples:
-        Using `Table` objects (note use of `Metadata` object to specify different schema names):
+        Using `Table` objects (note use of `Metadata` object to specify schemas):
 
         >>> with DAG(...) as dag:
-        >>>     input_table = Table('table_data', conn_id='source_db', metadata=Metadata(schema='public'))
-        >>>     output_table = Table('table_data', conn_id='target_db', metadata=Metadata(schema='stage'))
+        >>>     input_table = Table('table_data', conn_id='source_db', 
+        >>>                          metadata=Metadata(schema='public'))
+        >>>     output_table = Table('table_data', conn_id='target_db', 
+        >>>                          metadata=Metadata(schema='stage'))
         >>>     transfer_table(input_table, output_table)
 
         Using string table name:

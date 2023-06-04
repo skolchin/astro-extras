@@ -20,8 +20,11 @@ from .operators.direct import (
     run_sql_template,
     run_sql_templates,
 )
-from .utils.utils import (
+from .utils.template import (
     get_template_file,
+    get_template,
+)
+from .utils.utils import (
     split_table_name,
     ensure_table,
     schedule_ops,

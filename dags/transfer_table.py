@@ -9,7 +9,7 @@ from astro_extras import ETLSession, transfer_table, declare_tables, transfer_ta
 
 with DAG(
     dag_id='transfer_table',
-    start_date=pendulum.today('Europe/Moscow').add(days=-1),
+    start_date=pendulum.today().add(days=-1),
     schedule=None,
     catchup=False,
     tags=['test', 'table']

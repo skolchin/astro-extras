@@ -3,57 +3,12 @@
 
 """ Misc utility functions """
 
-import os
 from itertools import pairwise, groupby
-from airflow.models import DAG, BaseOperator
-from airflow.models.dag import DagContext
-from airflow.configuration import conf
+from airflow.models import BaseOperator
+
 from astro.sql.table import Table, Metadata
 
 from typing import Union, Tuple, Optional, List
-
-def get_template_file(template: str, ext: Optional[str] = '.sql', dag: Optional[DAG] = None) -> str:
-    """ Returns reference to template file, if one exists.
-    
-    This function looks up for a template file in `./templates/<dag_id>` folder
-    under directory set as DAGS_HOME in Airflow config (usually `./dags`).
-
-    Templates are used for SQL operations, html reporting and so on.
-    They consists of some plain-text content mixed with Jinja macros denoted by `{{}}` brackets,
-    which are automatically substituted by Airflow upon template execution.
-
-    Args:
-        template:  Template name (e.g. table name or reporting object) without any extension
-        ext:    Template file extension, `.sql` by default
-        dag:    Optional DAG context
-
-    Returns:
-        Name of template file relative to Airflow's home folder or `None` if no file was found
-
-    Examples:
-        If a `test_table` is to be processed in a `test-transfer` DAG, 
-        this SQL template could be used in order to add required `session_id` field 
-        at the beginning of a target table:
-
-            select {{ti.xcom_pull(key="session").session_id}} as session_id, * from test_table
-
-        The template must be created as `./dags/templates/test-transfer/test_table.sql` file.
-
-        Then, during this DAG execution, the template will automatically be picked up and executed,
-        substituting macros with actual `session_id` value:
-
-        >>> with DAG(dag_id='test-transfer', ...) as dag:
-        >>>     session = open_session('source', 'target')
-        >>>     transfer_table('test_table', session=session)
-        >>>     close_session(session)
-
-    """
-
-    dag = dag or DagContext.get_current_dag()
-    ext = '.' + ext if not ext.startswith('.') else ext
-    rel_file_name = os.path.join('templates', dag.dag_id, template + ext)
-    full_file_name = os.path.join(conf.get('core','dags_folder'), rel_file_name)
-    return rel_file_name if os.path.exists(full_file_name) else None
 
 def split_table_name(table: str) -> Tuple[Optional[str], str]:
     """ Splits table name to schema and table name """

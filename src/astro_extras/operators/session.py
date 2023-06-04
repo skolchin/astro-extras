@@ -123,7 +123,7 @@ class OpenSessionOperator(BaseOperator):
         self.session: ETLSession = None
 
     def _new_session(self, period_start: str, period_end: str, context: Context) -> int:
-        # TBD: use of database-neutral statement
+        # TODO: use database-neutral statement with SQLA
         sql = f"""insert into public.sessions(source, target, period, started, status, run_id) 
             values('{self.source_conn_id}','{self.destination_conn_id}','{{ {period_start}, {period_end} }}', 
             '{datetime.now()}','running','{context['run_id']}') returning session_id"""
@@ -211,11 +211,10 @@ def open_session(
     `{"period": "[<period_start>, <period_end>]"}` parameter when DAG is started. 
     These fields can be used in data extraction queries to limit dataset like this:
 
-        select * from data_table where
-            some_date between '{{ ti.xcom_pull(key="session").period_start }}'::timestamp
-                          and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
-
-    See `transfer_table` function for details on transfer operation.
+        select * from data_table 
+        where some_date 
+            between '{{ ti.xcom_pull(key="session").period_start }}'::timestamp
+            and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
 
     Technically, sessions are stored in a `public.sessions` table. Table DDL (for Postgres):
 
@@ -227,7 +226,8 @@ def open_session(
             run_id text,
             started timestamptz not null,
             finished timestamptz,
-            status varchar(10) not null check (status in ('running', 'success', 'error'))
+            status varchar(10) not null 
+                check (status in ('running', 'success', 'error'))
         );
 
     Every table where the data is saved should have an extra `session_id` field 
@@ -259,7 +259,7 @@ def open_session(
 
         >>> with DAG(...) as dag, ETLSession('source', 'target') as session:
         >>>     @dag.task
-        >>>     def print_session(session: Session):
+        >>>     def print_session(session: ETLSession):
         >>>         print(session)
         >>>     print_session(session)
 
@@ -277,7 +277,7 @@ def open_session(
         Table `test_table` must have the same structure in both databases, except
         that `session_id` field must be added to the target table as 1st column.
 
-        See `transfer_table` function for details on transfer operation.
+        See `astro_extras.operators.table.transfer_table` function for details on transfer operation.
     """
     
     assert (dag := dag or DagContext.get_current_dag())
@@ -341,7 +341,8 @@ def get_current_session(context: Optional[Context] = None) -> ETLSession:
     context = context or get_current_context()
     return context['ti'].xcom_pull(key='session')
 
-def ensure_session(session: Union[ETLSession, XComArg, None], context: Optional[Context] = None) -> ETLSession:
+def ensure_session(session: Optional[Union[ETLSession, XComArg]], 
+                   context: Optional[Context] = None) -> ETLSession:
     """ Returns current session. If a placeholder object returned by `open_session` is passed in,
     retrieves actual session from XCom. 
     
@@ -367,31 +368,34 @@ def get_session_period(context: Optional[Context] = None) -> Tuple[str, str]:
     """ Calculates ETL session loading period.
     
     This function is used when a new session is created. It recognizes a "period"
-    dagrun option, which must be set as two valid dates or datetimes considered
-    as lower and upper bound of loading period. If a date-only upper bound is used,
+    DAG run parameter, which must be provided as two valid dates or datetimes defining
+    lower and upper bound of loading period. If a date-only upper bound is used,
     it will be increased to hold entire day (see examples).
     
-    If this option was not specified, loading period will be set to interval of
+    If this option was not specified, loading period will be set as interval of
     `[data_interval_start, data_interval_end]` Airflow variables 
     (see https://docs.astronomer.io/learn/scheduling-in-airflow for details).
-    However, these dates will be converted to Airflow default timezone (as they are in UTC).
+    However, these dates will be converted to Airflow default timezone 
+    (as they are defined in UTC).
 
     Args:
         context:    DAG execution context (optional)
 
     Returns:
         Tuple of two datetimes indicating lower- and upper-bound of loading period,
-        converted to ISO-formatted strings (see `datetime.datetime.isoformat`).
+        converted to ISO-formatted strings (see `datetime.isoformat()`).
 
     Examples:
-        Examples of DAG run configuration options and conversion results:
+        Examples of DAG run configuration options and their conversion:
 
-        {"period": "[2023-05-01, 2023-05-31]"} 
+        ```
+        {"period": "[2023-05-01, 2023-05-31]"}
             -> ["2023-05-01T00:00:00", "2023-06-01T00:00:00"]
         {"period": "[2023-05-01, 2023-05-01]"} 
             -> ["2023-05-01T00:00:00", "2023-05-02T00:00:00"]
         {"period": "[2023-05-01T12:00:00, 2023-05-01T14:00:00]"} 
             -> ["2023-05-01T10:00:00", "2023-05-01T14:00:00"]
+        ```
 
     """
     context = context or get_current_context()
@@ -404,7 +408,7 @@ def get_session_period(context: Optional[Context] = None) -> Tuple[str, str]:
         if len(period) < 2:
             raise AirflowFailException('Invalid period: two valid dates in YYYY-MM-DD format must be specified')
 
-        # If no time part is set in the upper period bound,
+        # If no time part is provided in the upper period bound,
         # consider this to be date-only and add 1 day to align to days'end
         # For example, specifying period = ["2023-05-01", "2023-05-01"] will be converted
         # to ["2023-05-01 00:00:00", "2023-05-02 00:00:00"]

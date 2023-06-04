@@ -8,7 +8,7 @@ from astro_extras import open_session, close_session, transfer_table, ETLSession
 
 with DAG(
     dag_id='print_session',
-    start_date=pendulum.today('Europe/Moscow').add(days=-1),
+    start_date=pendulum.today().add(days=-1),
     schedule=None,
     catchup=False,
     tags=['test', 'session'],

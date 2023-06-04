@@ -32,58 +32,12 @@
 
 &#34;&#34;&#34; Misc utility functions &#34;&#34;&#34;
 
-import os
 from itertools import pairwise, groupby
-from airflow.models import DAG, BaseOperator
-from airflow.models.dag import DagContext
-from airflow.configuration import conf
+from airflow.models import BaseOperator
+
 from astro.sql.table import Table, Metadata
 
 from typing import Union, Tuple, Optional, List
-
-def get_table_template(table: str, ext: Optional[str] = &#39;.sql&#39;, dag: Optional[DAG] = None) -&gt; Optional[str]:
-    &#34;&#34;&#34; Returns name of template file for given table
-    
-    This function looks up for a file `&lt;table&gt;&lt;ext&gt;` in `./templates/&lt;dag_id&gt;` folder
-    under directory set as DAGS_HOME in Airflow config (usually `./dags`).
-
-    Such files are used as templates for SQL operations, html reporting and so on.
-    They consists of some plain-text content mixed with Jinja macros denoted by `{{}}` brackets,
-    which are automatically substituted by Airflow upon template execution.
-
-    Args:
-        table:  A table or any other object name
-        ext:    Template file extension, `.sql` by default
-        dag:    Optional DAG context
-
-    Returns:
-        Name of template file relative to Airflow&#39;s home folder or `None` if no file was found
-
-    Examples:
-        If a `test_table` is to be processed in a `test-transfer` DAG, 
-        this SQL template could be used in order to add required `session_id` field 
-        at the beginning of a target table:
-
-            select {{ti.xcom_pull(key=&#34;session&#34;).session_id}} as session_id, * from test_table
-
-        The template must be created as `./dags/templates/test-transfer/test_table.sql` file.
-
-        Then, during this DAG execution, the template will automatically be picked up and executed,
-        substituting macros with actual `session_id` value:
-
-        &gt;&gt;&gt; with DAG(dag_id=&#39;test-transfer&#39;, ...) as dag:
-        &gt;&gt;&gt;     session = open_session(&#39;source&#39;, &#39;target&#39;)
-        &gt;&gt;&gt;     transfer_table(&#39;test_table&#39;, session=session)
-        &gt;&gt;&gt;     close_session(session)
-
-    &#34;&#34;&#34;
-
-    _, table = split_table_name(table)
-    dag = dag or DagContext.get_current_dag()
-    ext = &#39;.&#39; + ext if not ext.startswith(&#39;.&#39;) else ext
-    rel_file_name = os.path.join(&#39;templates&#39;, dag.dag_id, table + ext)
-    full_file_name = os.path.join(conf.get(&#39;core&#39;,&#39;dags_folder&#39;), rel_file_name)
-    return rel_file_name if os.path.exists(full_file_name) else None
 
 def split_table_name(table: str) -&gt; Tuple[Optional[str], str]:
     &#34;&#34;&#34; Splits table name to schema and table name &#34;&#34;&#34;
@@ -118,6 +72,7 @@ def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -&gt; Base
     splits = list({k: [y[1] for y in g] \
         for k, g in groupby(enumerate(ops_list), lambda v: v[0] // (len(ops_list) // num_parallel))}.values())
     _ = [a.set_downstream(b) for g in splits for a, b in pairwise(g)]
+
     return [x[-1] for x in splits]</code></pre>
 </details>
 </section>
@@ -149,90 +104,6 @@ def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -&gt; Base
     raise TypeError(f&#39;Either str or Table expected, {table.__class__.__name__} found&#39;)</code></pre>
 </details>
 </dd>
-<dt id="astro_extras.utils.utils.get_table_template"><code class="name flex">
-<span>def <span class="ident">get_table_template</span></span>(<span>table: str, ext: Optional[str] = '.sql', dag: Optional[airflow.models.dag.DAG] = None) ‑> Optional[str]</span>
-</code></dt>
-<dd>
-<div class="desc"><p>Returns name of template file for given table</p>
-<p>This function looks up for a file <code>&lt;table&gt;&lt;ext&gt;</code> in <code>./templates/&lt;dag_id&gt;</code> folder
-under directory set as DAGS_HOME in Airflow config (usually <code>./dags</code>).</p>
-<p>Such files are used as templates for SQL operations, html reporting and so on.
-They consists of some plain-text content mixed with Jinja macros denoted by <code>{{}}</code> brackets,
-which are automatically substituted by Airflow upon template execution.</p>
-<h2 id="args">Args</h2>
-<dl>
-<dt><strong><code>table</code></strong></dt>
-<dd>A table or any other object name</dd>
-<dt><strong><code>ext</code></strong></dt>
-<dd>Template file extension, <code>.sql</code> by default</dd>
-<dt><strong><code>dag</code></strong></dt>
-<dd>Optional DAG context</dd>
-</dl>
-<h2 id="returns">Returns</h2>
-<p>Name of template file relative to Airflow's home folder or <code>None</code> if no file was found</p>
-<h2 id="examples">Examples</h2>
-<p>If a <code>test_table</code> is to be processed in a <code>test-transfer</code> DAG,
-this SQL template could be used in order to add required <code>session_id</code> field
-at the beginning of a target table:</p>
-<pre><code>select {{ti.xcom_pull(key="session").session_id}} as session_id, * from test_table
-</code></pre>
-<p>The template must be created as <code>./dags/templates/test-transfer/test_table.sql</code> file.</p>
-<p>Then, during this DAG execution, the template will automatically be picked up and executed,
-substituting macros with actual <code>session_id</code> value:</p>
-<pre><code class="language-python-repl">&gt;&gt;&gt; with DAG(dag_id='test-transfer', ...) as dag:
-&gt;&gt;&gt;     session = open_session('source', 'target')
-&gt;&gt;&gt;     transfer_table('test_table', session=session)
-&gt;&gt;&gt;     close_session(session)
-</code></pre></div>
-<details class="source">
-<summary>
-<span>Expand source code</span>
-</summary>
-<pre><code class="python">def get_table_template(table: str, ext: Optional[str] = &#39;.sql&#39;, dag: Optional[DAG] = None) -&gt; Optional[str]:
-    &#34;&#34;&#34; Returns name of template file for given table
-    
-    This function looks up for a file `&lt;table&gt;&lt;ext&gt;` in `./templates/&lt;dag_id&gt;` folder
-    under directory set as DAGS_HOME in Airflow config (usually `./dags`).
-
-    Such files are used as templates for SQL operations, html reporting and so on.
-    They consists of some plain-text content mixed with Jinja macros denoted by `{{}}` brackets,
-    which are automatically substituted by Airflow upon template execution.
-
-    Args:
-        table:  A table or any other object name
-        ext:    Template file extension, `.sql` by default
-        dag:    Optional DAG context
-
-    Returns:
-        Name of template file relative to Airflow&#39;s home folder or `None` if no file was found
-
-    Examples:
-        If a `test_table` is to be processed in a `test-transfer` DAG, 
-        this SQL template could be used in order to add required `session_id` field 
-        at the beginning of a target table:
-
-            select {{ti.xcom_pull(key=&#34;session&#34;).session_id}} as session_id, * from test_table
-
-        The template must be created as `./dags/templates/test-transfer/test_table.sql` file.
-
-        Then, during this DAG execution, the template will automatically be picked up and executed,
-        substituting macros with actual `session_id` value:
-
-        &gt;&gt;&gt; with DAG(dag_id=&#39;test-transfer&#39;, ...) as dag:
-        &gt;&gt;&gt;     session = open_session(&#39;source&#39;, &#39;target&#39;)
-        &gt;&gt;&gt;     transfer_table(&#39;test_table&#39;, session=session)
-        &gt;&gt;&gt;     close_session(session)
-
-    &#34;&#34;&#34;
-
-    _, table = split_table_name(table)
-    dag = dag or DagContext.get_current_dag()
-    ext = &#39;.&#39; + ext if not ext.startswith(&#39;.&#39;) else ext
-    rel_file_name = os.path.join(&#39;templates&#39;, dag.dag_id, table + ext)
-    full_file_name = os.path.join(conf.get(&#39;core&#39;,&#39;dags_folder&#39;), rel_file_name)
-    return rel_file_name if os.path.exists(full_file_name) else None</code></pre>
-</details>
-</dd>
 <dt id="astro_extras.utils.utils.schedule_ops"><code class="name flex">
 <span>def <span class="ident">schedule_ops</span></span>(<span>ops_list: List[airflow.models.baseoperator.BaseOperator], num_parallel: int = 1) ‑> airflow.models.baseoperator.BaseOperator</span>
 </code></dt>
@@ -257,6 +128,7 @@ substituting macros with actual <code>session_id</code> value:</p>
     splits = list({k: [y[1] for y in g] \
         for k, g in groupby(enumerate(ops_list), lambda v: v[0] // (len(ops_list) // num_parallel))}.values())
     _ = [a.set_downstream(b) for g in splits for a, b in pairwise(g)]
+
     return [x[-1] for x in splits]</code></pre>
 </details>
 </dd>
@@ -296,7 +168,6 @@ substituting macros with actual <code>session_id</code> value:</p>
 <li><h3><a href="#header-functions">Functions</a></h3>
 <ul class="">
 <li><code><a title="astro_extras.utils.utils.ensure_table" href="#astro_extras.utils.utils.ensure_table">ensure_table</a></code></li>
-<li><code><a title="astro_extras.utils.utils.get_table_template" href="#astro_extras.utils.utils.get_table_template">get_table_template</a></code></li>
 <li><code><a title="astro_extras.utils.utils.schedule_ops" href="#astro_extras.utils.utils.schedule_ops">schedule_ops</a></code></li>
 <li><code><a title="astro_extras.utils.utils.split_table_name" href="#astro_extras.utils.utils.split_table_name">split_table_name</a></code></li>
 </ul>

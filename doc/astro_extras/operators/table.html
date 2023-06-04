@@ -49,7 +49,8 @@ from astro.airflow.datasets import kwargs_with_datasets
 from typing import Union, Literal, Optional, Iterable, List
 
 from .session import ETLSession, ensure_session
-from ..utils.utils import get_table_template, ensure_table, schedule_ops
+from ..utils.utils import ensure_table, schedule_ops
+from ..utils.template import get_template_file
 
 class TableTransfer(GenericTransfer):
     &#34;&#34;&#34; Customized table transfer operator. Usually is used within `transfer_table` function &#34;&#34;&#34;
@@ -88,15 +89,17 @@ class TableTransfer(GenericTransfer):
         self.mode = mode
         self.session = session
 
-    def _get_sql(self, source_table: Table, source_db: BaseDatabase, session: ETLSession) -&gt; str:
+    def _get_sql(self, table: Table, db: BaseDatabase, session: ETLSession) -&gt; str:
         &#34;&#34;&#34; Internal - get a sql statement or template for given table &#34;&#34;&#34;
-        if (sql_file := get_table_template(source_table.name, &#39;.sql&#39;)):
+
+        if (sql_file := get_template_file(table.name, &#39;.sql&#39;)):
             self.log.info(f&#39;Using template file {sql_file}&#39;)
             return sql_file
-        
-        full_name = source_db.get_table_qualified_name(source_table)
+
+        full_name = db.get_table_qualified_name(table)
         if session:
             return &#39;select {{ti.xcom_pull(key=&#34;session&#34;).session_id}} as session_id, * from &#39; + full_name
+
         return &#39;select * from &#39; + full_name
 
     def execute(self, context: Context):
@@ -133,7 +136,7 @@ def load_table(
     further processing.
 
     SQL templating is supported, e.g. if a template for given table was found, it
-    will be executed to get the data (see `astro_extras.utils.utils.get_table_template`).
+    will be executed to get the data (see `astro_extras.utils.template.get_template_file`).
 
     Please note that in order to operate even on modest volumes of data,
     intermediate XCom storage might be required. Easiest way to set it up is to use
@@ -146,14 +149,13 @@ def load_table(
     for details.
 
     Args:
-        table:  Either a table name or Astro-SDK `Table` object
-            to load data from
+        table:  Either a table name or Astro-SDK `Table` object to load data from
         conn_id:    Airflow connection ID to underlying database. If not specified,
-            and `Table` object is passed it, its connection will be used.
+            and `Table` object is passed it, its `conn_id` attribute will be used.
         session:    `astro_extras.operators.session.ETLSession` object. 
             Used only to link up to the `open_session` operator.
-        sql:    Custom SQL to load data, used only if no SQL template was found.
-            If empty, all table data will be loaded.
+        sql:    Custom SQL to load data, used only if no SQL template found.
+            If neither SQL nor template is given, all table data will be loaded.
 
     Results:
         `XComArg` object suitable for further manipulations with Astro-SDK functions
@@ -175,7 +177,7 @@ def load_table(
                         task_id=f&#39;load-{table}&#39;,
                         results_format=&#39;pandas_dataframe&#39;)
         def _load_table_by_name(table: str, session: ETLSession):
-            sql_file = get_table_template(table, &#39;.sql&#39;, dag=dag)
+            sql_file = get_template_file(table, &#39;.sql&#39;, dag=dag)
             return sql or sql_file or f&#39;select * from {table}&#39;
 
         return _load_table_by_name(table, session)
@@ -186,7 +188,7 @@ def load_table(
                         task_id=f&#39;load-{table.name}&#39;,
                         results_format=&#39;pandas_dataframe&#39;)
         def _load_table(table: Table, session: ETLSession):
-            sql_file = get_table_template(table.name, &#39;.sql&#39;, dag=dag)
+            sql_file = get_template_file(table.name, &#39;.sql&#39;, dag=dag)
             return sql or sql_file or &#39;&#39;&#39;select * from {{table}}&#39;&#39;&#39;
 
         return _load_table(table, session)
@@ -195,7 +197,8 @@ def save_table(
         data: XComArg,
         table: Union[str, Table],
         conn_id: Optional[str] = None,
-        session: Optional[ETLSession] = None) -&gt; XComArg:
+        session: Optional[ETLSession] = None,
+        fail_if_not_exist: Optional[bool] = True) -&gt; XComArg:
     &#34;&#34;&#34; Saves a table into database &#34;&#34;&#34;
 
     if isinstance(table, Table):
@@ -204,8 +207,13 @@ def save_table(
         task_id = f&#39;save-{table}&#39;
         table = ensure_table(table, conn_id)
 
+    conn_id = conn_id or table.conn_id
     @aql.dataframe(if_exists=&#39;append&#39;, conn_id=conn_id, task_id=task_id)
     def _save_data(data: pd.DataFrame, session: ETLSession):
+        if fail_if_not_exist:
+            db = create_database(conn_id, table)
+            if not db.table_exists(table):
+                raise AirflowFailException(f&#39;Table {table.name} was not found under {conn_id} connection&#39;)
         session = ensure_session(session)
         if session and &#39;session_id&#39; not in data.columns:
             data.insert(0, &#39;session_id&#39;, session.session_id)
@@ -222,7 +230,79 @@ def transfer_table(
         session: Union[XComArg, ETLSession, None] = None,
         **kwargs) -&gt; XComArg:
     
-    &#34;&#34;&#34; Transfer a table from source to destination database &#34;&#34;&#34;
+    &#34;&#34;&#34; Cross-database data transfer.
+
+    This function transfers table data from one database to another,
+    implementing a cross-database geterogenous data transfer.
+
+    It reads data from source table into memory and then sequentaly inserts 
+    each record into the target table. Fields order in the source and target tables 
+    must be identical and field types must be compatible, 
+    or transfer will fail or produce undesirable results.
+
+    To limit data selection or customize fields, a SQL template could be 
+    created for the source table (see `astro_extras.utils.template.get_template_file`).
+    The template must ensure fields order and type compatibility with the target table.
+    If a `ETLSession` is been used, a `session_id` field must also be manually added
+    at proper place.
+
+    For example, if these tables are to participate in transfer:
+
+        create table source_data ( a int, b text );
+        create table target_data ( session_id int, b text, a int );
+
+    then, this SQL template might be created as `source_data.sql` file:
+
+        select {{ti.xcom_pull(key=&#34;session&#34;).session_id}} as session_id, b, a 
+        from source_data;
+
+    Args:
+        source: Either a table name or a `Table` object which would be a data source.
+            If a string name is provided, it may contain schema definition denoted by `.`. 
+            For `Table` objects, schema must be defined in `Metadata` field,
+            otherwise Astro SDK might fall to use its default schema.
+
+        target: Either a table name or a `Table` object where data will be saved into.
+            If a name is provided, it may contain schema definition denoted by `.`. 
+            For `Table` objects, schema must be defined in `Metadata` field,
+            otherwise Astro SDK might fall to use its default schema.
+            If omitted, `source` argument value is used (this makes sense only
+            with string table name and different connections).
+
+        mode: Reserved for furter use
+
+        source_conn_id: Source database Airflow connection.
+            Used only with string source table name; for `Table` objects, `conn_id` field is used.
+            If omitted and `session` argument is provided, `session.source_conn_id` will be used.
+
+        destination_conn_id: Destination database Airflow connection.
+            Used only with string target table name; for `Table` objects, `conn_id` field is used.
+            If omitted and `session` argument is provided, `session.destination_conn_id` will be used.
+
+        session:    `ETLSession` object. If set and no SQL template is defined,
+            a `session_id` field will be automatically added to selection.
+
+        kwargs:     Any parameters passed to underlying `TableTransfer` operator (e.g. `preoperator`, ...)
+
+    Returns:
+        `XComArg` object
+
+    Examples:
+        Using `Table` objects (note use of `Metadata` object to specify schemas):
+
+        &gt;&gt;&gt; with DAG(...) as dag:
+        &gt;&gt;&gt;     input_table = Table(&#39;table_data&#39;, conn_id=&#39;source_db&#39;, 
+        &gt;&gt;&gt;                          metadata=Metadata(schema=&#39;public&#39;))
+        &gt;&gt;&gt;     output_table = Table(&#39;table_data&#39;, conn_id=&#39;target_db&#39;, 
+        &gt;&gt;&gt;                          metadata=Metadata(schema=&#39;stage&#39;))
+        &gt;&gt;&gt;     transfer_table(input_table, output_table)
+
+        Using string table name:
+
+        &gt;&gt;&gt; with DAG(...) as dag, ETLSession(&#39;source_db&#39;, &#39;target_db&#39;) as sess:
+        &gt;&gt;&gt;     transfer_table(&#39;public.table_data&#39;, session=sess)
+
+    &#34;&#34;&#34;
 
     source_table = ensure_table(source, source_conn_id)
     dest_table = ensure_table(target, destination_conn_id) or source_table
@@ -241,12 +321,13 @@ def declare_tables(
         table_names: Iterable[str],
         conn_id: Optional[str] = None
 ) -&gt; List[Table]:
-    &#34;&#34;&#34; Define list of `Table` objects &#34;&#34;&#34;
+    &#34;&#34;&#34; Convert list of string table names to list of `Table` objects &#34;&#34;&#34;
+
     return [ensure_table(t, conn_id) for t in table_names]
 
 def transfer_tables(
-        source_tables: Iterable[Union[str, Table]],
-        target_tables: Optional[Iterable[Union[str, Table]]] = None,
+        source_tables: List[Union[str, Table]],
+        target_tables: Optional[List[Union[str, Table]]] = None,
         mode: Optional[Literal[&#39;default&#39;, &#39;delta&#39;, &#39;full&#39;]] = &#39;default&#39;,
         source_conn_id: Optional[str] = None,
         destination_conn_id: Optional[str] = None,
@@ -254,6 +335,7 @@ def transfer_tables(
         num_parallel: Optional[int] = 1,
         session: Union[XComArg, ETLSession, None] = None,
         **kwargs) -&gt; TaskGroup:
+    &#34;&#34;&#34; Transfer multiple tables &#34;&#34;&#34;
 
     if target_tables and len(target_tables) != len(source_tables):
         raise AirflowFailException(f&#39;Source and target tables list size must be equal&#39;)
@@ -290,7 +372,7 @@ def transfer_tables(
 <span>def <span class="ident">declare_tables</span></span>(<span>table_names: Iterable[str], conn_id: Optional[str] = None) ‑> List[astro.table.Table]</span>
 </code></dt>
 <dd>
-<div class="desc"><p>Define list of <code>Table</code> objects</p></div>
+<div class="desc"><p>Convert list of string table names to list of <code>Table</code> objects</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -299,7 +381,8 @@ def transfer_tables(
         table_names: Iterable[str],
         conn_id: Optional[str] = None
 ) -&gt; List[Table]:
-    &#34;&#34;&#34; Define list of `Table` objects &#34;&#34;&#34;
+    &#34;&#34;&#34; Convert list of string table names to list of `Table` objects &#34;&#34;&#34;
+
     return [ensure_table(t, conn_id) for t in table_names]</code></pre>
 </details>
 </dd>
@@ -312,7 +395,7 @@ def transfer_tables(
 load data from given database table into XCom and make it available for
 further processing.</p>
 <p>SQL templating is supported, e.g. if a template for given table was found, it
-will be executed to get the data (see <code><a title="astro_extras.utils.utils.get_table_template" href="../utils/utils.html#astro_extras.utils.utils.get_table_template">get_table_template()</a></code>).</p>
+will be executed to get the data (see <code><a title="astro_extras.utils.template.get_template_file" href="../utils/template.html#astro_extras.utils.template.get_template_file">get_template_file()</a></code>).</p>
 <p>Please note that in order to operate even on modest volumes of data,
 intermediate XCom storage might be required. Easiest way to set it up is to use
 local Parquet file storage by setting
@@ -324,17 +407,16 @@ for details.</p>
 <h2 id="args">Args</h2>
 <dl>
 <dt><strong><code>table</code></strong></dt>
-<dd>Either a table name or Astro-SDK <code>Table</code> object
-to load data from</dd>
+<dd>Either a table name or Astro-SDK <code>Table</code> object to load data from</dd>
 <dt><strong><code>conn_id</code></strong></dt>
 <dd>Airflow connection ID to underlying database. If not specified,
-and <code>Table</code> object is passed it, its connection will be used.</dd>
+and <code>Table</code> object is passed it, its <code>conn_id</code> attribute will be used.</dd>
 <dt><strong><code>session</code></strong></dt>
 <dd><code><a title="astro_extras.operators.session.ETLSession" href="session.html#astro_extras.operators.session.ETLSession">ETLSession</a></code> object.
 Used only to link up to the <code>open_session</code> operator.</dd>
 <dt><strong><code>sql</code></strong></dt>
-<dd>Custom SQL to load data, used only if no SQL template was found.
-If empty, all table data will be loaded.</dd>
+<dd>Custom SQL to load data, used only if no SQL template found.
+If neither SQL nor template is given, all table data will be loaded.</dd>
 </dl>
 <h2 id="results">Results</h2>
 <p><code>XComArg</code> object suitable for further manipulations with Astro-SDK functions</p>
@@ -363,7 +445,7 @@ If empty, all table data will be loaded.</dd>
     further processing.
 
     SQL templating is supported, e.g. if a template for given table was found, it
-    will be executed to get the data (see `astro_extras.utils.utils.get_table_template`).
+    will be executed to get the data (see `astro_extras.utils.template.get_template_file`).
 
     Please note that in order to operate even on modest volumes of data,
     intermediate XCom storage might be required. Easiest way to set it up is to use
@@ -376,14 +458,13 @@ If empty, all table data will be loaded.</dd>
     for details.
 
     Args:
-        table:  Either a table name or Astro-SDK `Table` object
-            to load data from
+        table:  Either a table name or Astro-SDK `Table` object to load data from
         conn_id:    Airflow connection ID to underlying database. If not specified,
-            and `Table` object is passed it, its connection will be used.
+            and `Table` object is passed it, its `conn_id` attribute will be used.
         session:    `astro_extras.operators.session.ETLSession` object. 
             Used only to link up to the `open_session` operator.
-        sql:    Custom SQL to load data, used only if no SQL template was found.
-            If empty, all table data will be loaded.
+        sql:    Custom SQL to load data, used only if no SQL template found.
+            If neither SQL nor template is given, all table data will be loaded.
 
     Results:
         `XComArg` object suitable for further manipulations with Astro-SDK functions
@@ -405,7 +486,7 @@ If empty, all table data will be loaded.</dd>
                         task_id=f&#39;load-{table}&#39;,
                         results_format=&#39;pandas_dataframe&#39;)
         def _load_table_by_name(table: str, session: ETLSession):
-            sql_file = get_table_template(table, &#39;.sql&#39;, dag=dag)
+            sql_file = get_template_file(table, &#39;.sql&#39;, dag=dag)
             return sql or sql_file or f&#39;select * from {table}&#39;
 
         return _load_table_by_name(table, session)
@@ -416,14 +497,14 @@ If empty, all table data will be loaded.</dd>
                         task_id=f&#39;load-{table.name}&#39;,
                         results_format=&#39;pandas_dataframe&#39;)
         def _load_table(table: Table, session: ETLSession):
-            sql_file = get_table_template(table.name, &#39;.sql&#39;, dag=dag)
+            sql_file = get_template_file(table.name, &#39;.sql&#39;, dag=dag)
             return sql or sql_file or &#39;&#39;&#39;select * from {{table}}&#39;&#39;&#39;
 
         return _load_table(table, session)</code></pre>
 </details>
 </dd>
 <dt id="astro_extras.operators.table.save_table"><code class="name flex">
-<span>def <span class="ident">save_table</span></span>(<span>data: airflow.models.xcom_arg.XComArg, table: Union[str, astro.table.Table], conn_id: Optional[str] = None, session: Optional[<a title="astro_extras.operators.session.ETLSession" href="session.html#astro_extras.operators.session.ETLSession">ETLSession</a>] = None) ‑> airflow.models.xcom_arg.XComArg</span>
+<span>def <span class="ident">save_table</span></span>(<span>data: airflow.models.xcom_arg.XComArg, table: Union[str, astro.table.Table], conn_id: Optional[str] = None, session: Optional[<a title="astro_extras.operators.session.ETLSession" href="session.html#astro_extras.operators.session.ETLSession">ETLSession</a>] = None, fail_if_not_exist: Optional[bool] = True) ‑> airflow.models.xcom_arg.XComArg</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Saves a table into database</p></div>
@@ -435,7 +516,8 @@ If empty, all table data will be loaded.</dd>
         data: XComArg,
         table: Union[str, Table],
         conn_id: Optional[str] = None,
-        session: Optional[ETLSession] = None) -&gt; XComArg:
+        session: Optional[ETLSession] = None,
+        fail_if_not_exist: Optional[bool] = True) -&gt; XComArg:
     &#34;&#34;&#34; Saves a table into database &#34;&#34;&#34;
 
     if isinstance(table, Table):
@@ -444,8 +526,13 @@ If empty, all table data will be loaded.</dd>
         task_id = f&#39;save-{table}&#39;
         table = ensure_table(table, conn_id)
 
+    conn_id = conn_id or table.conn_id
     @aql.dataframe(if_exists=&#39;append&#39;, conn_id=conn_id, task_id=task_id)
     def _save_data(data: pd.DataFrame, session: ETLSession):
+        if fail_if_not_exist:
+            db = create_database(conn_id, table)
+            if not db.table_exists(table):
+                raise AirflowFailException(f&#39;Table {table.name} was not found under {conn_id} connection&#39;)
         session = ensure_session(session)
         if session and &#39;session_id&#39; not in data.columns:
             data.insert(0, &#39;session_id&#39;, session.session_id)
@@ -458,7 +545,73 @@ If empty, all table data will be loaded.</dd>
 <span>def <span class="ident">transfer_table</span></span>(<span>source: Union[str, astro.table.Table], target: Union[str, astro.table.Table, ForwardRef(None)] = None, mode: Optional[Literal['default', 'delta', 'full']] = 'default', source_conn_id: Optional[str] = None, destination_conn_id: Optional[str] = None, session: Union[<a title="astro_extras.operators.session.ETLSession" href="session.html#astro_extras.operators.session.ETLSession">ETLSession</a>, airflow.models.xcom_arg.XComArg, ForwardRef(None)] = None, **kwargs) ‑> airflow.models.xcom_arg.XComArg</span>
 </code></dt>
 <dd>
-<div class="desc"><p>Transfer a table from source to destination database</p></div>
+<div class="desc"><p>Cross-database data transfer.</p>
+<p>This function transfers table data from one database to another,
+implementing a cross-database geterogenous data transfer.</p>
+<p>It reads data from source table into memory and then sequentaly inserts
+each record into the target table. Fields order in the source and target tables
+must be identical and field types must be compatible,
+or transfer will fail or produce undesirable results.</p>
+<p>To limit data selection or customize fields, a SQL template could be
+created for the source table (see <code><a title="astro_extras.utils.template.get_template_file" href="../utils/template.html#astro_extras.utils.template.get_template_file">get_template_file()</a></code>).
+The template must ensure fields order and type compatibility with the target table.
+If a <code>ETLSession</code> is been used, a <code>session_id</code> field must also be manually added
+at proper place.</p>
+<p>For example, if these tables are to participate in transfer:</p>
+<pre><code>create table source_data ( a int, b text );
+create table target_data ( session_id int, b text, a int );
+</code></pre>
+<p>then, this SQL template might be created as <code>source_data.sql</code> file:</p>
+<pre><code>select {{ti.xcom_pull(key="session").session_id}} as session_id, b, a 
+from source_data;
+</code></pre>
+<h2 id="args">Args</h2>
+<dl>
+<dt><strong><code>source</code></strong></dt>
+<dd>Either a table name or a <code>Table</code> object which would be a data source.
+If a string name is provided, it may contain schema definition denoted by <code>.</code>.
+For <code>Table</code> objects, schema must be defined in <code>Metadata</code> field,
+otherwise Astro SDK might fall to use its default schema.</dd>
+<dt><strong><code>target</code></strong></dt>
+<dd>Either a table name or a <code>Table</code> object where data will be saved into.
+If a name is provided, it may contain schema definition denoted by <code>.</code>.
+For <code>Table</code> objects, schema must be defined in <code>Metadata</code> field,
+otherwise Astro SDK might fall to use its default schema.
+If omitted, <code>source</code> argument value is used (this makes sense only
+with string table name and different connections).</dd>
+<dt><strong><code>mode</code></strong></dt>
+<dd>Reserved for furter use</dd>
+<dt><strong><code>source_conn_id</code></strong></dt>
+<dd>Source database Airflow connection.
+Used only with string source table name; for <code>Table</code> objects, <code>conn_id</code> field is used.
+If omitted and <code>session</code> argument is provided, <code>session.source_conn_id</code> will be used.</dd>
+<dt><strong><code>destination_conn_id</code></strong></dt>
+<dd>Destination database Airflow connection.
+Used only with string target table name; for <code>Table</code> objects, <code>conn_id</code> field is used.
+If omitted and <code>session</code> argument is provided, <code>session.destination_conn_id</code> will be used.</dd>
+<dt><strong><code>session</code></strong></dt>
+<dd><code>ETLSession</code> object. If set and no SQL template is defined,
+a <code>session_id</code> field will be automatically added to selection.</dd>
+<dt><strong><code>kwargs</code></strong></dt>
+<dd>
+<p>Any parameters passed to underlying <code><a title="astro_extras.operators.table.TableTransfer" href="#astro_extras.operators.table.TableTransfer">TableTransfer</a></code> operator (e.g. <code>preoperator</code>, &hellip;)</p>
+</dd>
+</dl>
+<h2 id="returns">Returns</h2>
+<p><code>XComArg</code> object</p>
+<h2 id="examples">Examples</h2>
+<p>Using <code>Table</code> objects (note use of <code>Metadata</code> object to specify schemas):</p>
+<pre><code class="language-python-repl">&gt;&gt;&gt; with DAG(...) as dag:
+&gt;&gt;&gt;     input_table = Table('table_data', conn_id='source_db', 
+&gt;&gt;&gt;                          metadata=Metadata(schema='public'))
+&gt;&gt;&gt;     output_table = Table('table_data', conn_id='target_db', 
+&gt;&gt;&gt;                          metadata=Metadata(schema='stage'))
+&gt;&gt;&gt;     transfer_table(input_table, output_table)
+</code></pre>
+<p>Using string table name:</p>
+<pre><code class="language-python-repl">&gt;&gt;&gt; with DAG(...) as dag, ETLSession('source_db', 'target_db') as sess:
+&gt;&gt;&gt;     transfer_table('public.table_data', session=sess)
+</code></pre></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
@@ -472,7 +625,79 @@ If empty, all table data will be loaded.</dd>
         session: Union[XComArg, ETLSession, None] = None,
         **kwargs) -&gt; XComArg:
     
-    &#34;&#34;&#34; Transfer a table from source to destination database &#34;&#34;&#34;
+    &#34;&#34;&#34; Cross-database data transfer.
+
+    This function transfers table data from one database to another,
+    implementing a cross-database geterogenous data transfer.
+
+    It reads data from source table into memory and then sequentaly inserts 
+    each record into the target table. Fields order in the source and target tables 
+    must be identical and field types must be compatible, 
+    or transfer will fail or produce undesirable results.
+
+    To limit data selection or customize fields, a SQL template could be 
+    created for the source table (see `astro_extras.utils.template.get_template_file`).
+    The template must ensure fields order and type compatibility with the target table.
+    If a `ETLSession` is been used, a `session_id` field must also be manually added
+    at proper place.
+
+    For example, if these tables are to participate in transfer:
+
+        create table source_data ( a int, b text );
+        create table target_data ( session_id int, b text, a int );
+
+    then, this SQL template might be created as `source_data.sql` file:
+
+        select {{ti.xcom_pull(key=&#34;session&#34;).session_id}} as session_id, b, a 
+        from source_data;
+
+    Args:
+        source: Either a table name or a `Table` object which would be a data source.
+            If a string name is provided, it may contain schema definition denoted by `.`. 
+            For `Table` objects, schema must be defined in `Metadata` field,
+            otherwise Astro SDK might fall to use its default schema.
+
+        target: Either a table name or a `Table` object where data will be saved into.
+            If a name is provided, it may contain schema definition denoted by `.`. 
+            For `Table` objects, schema must be defined in `Metadata` field,
+            otherwise Astro SDK might fall to use its default schema.
+            If omitted, `source` argument value is used (this makes sense only
+            with string table name and different connections).
+
+        mode: Reserved for furter use
+
+        source_conn_id: Source database Airflow connection.
+            Used only with string source table name; for `Table` objects, `conn_id` field is used.
+            If omitted and `session` argument is provided, `session.source_conn_id` will be used.
+
+        destination_conn_id: Destination database Airflow connection.
+            Used only with string target table name; for `Table` objects, `conn_id` field is used.
+            If omitted and `session` argument is provided, `session.destination_conn_id` will be used.
+
+        session:    `ETLSession` object. If set and no SQL template is defined,
+            a `session_id` field will be automatically added to selection.
+
+        kwargs:     Any parameters passed to underlying `TableTransfer` operator (e.g. `preoperator`, ...)
+
+    Returns:
+        `XComArg` object
+
+    Examples:
+        Using `Table` objects (note use of `Metadata` object to specify schemas):
+
+        &gt;&gt;&gt; with DAG(...) as dag:
+        &gt;&gt;&gt;     input_table = Table(&#39;table_data&#39;, conn_id=&#39;source_db&#39;, 
+        &gt;&gt;&gt;                          metadata=Metadata(schema=&#39;public&#39;))
+        &gt;&gt;&gt;     output_table = Table(&#39;table_data&#39;, conn_id=&#39;target_db&#39;, 
+        &gt;&gt;&gt;                          metadata=Metadata(schema=&#39;stage&#39;))
+        &gt;&gt;&gt;     transfer_table(input_table, output_table)
+
+        Using string table name:
+
+        &gt;&gt;&gt; with DAG(...) as dag, ETLSession(&#39;source_db&#39;, &#39;target_db&#39;) as sess:
+        &gt;&gt;&gt;     transfer_table(&#39;public.table_data&#39;, session=sess)
+
+    &#34;&#34;&#34;
 
     source_table = ensure_table(source, source_conn_id)
     dest_table = ensure_table(target, destination_conn_id) or source_table
@@ -489,17 +714,17 @@ If empty, all table data will be loaded.</dd>
 </details>
 </dd>
 <dt id="astro_extras.operators.table.transfer_tables"><code class="name flex">
-<span>def <span class="ident">transfer_tables</span></span>(<span>source_tables: Iterable[Union[str, astro.table.Table]], target_tables: Optional[Iterable[Union[str, astro.table.Table]]] = None, mode: Optional[Literal['default', 'delta', 'full']] = 'default', source_conn_id: Optional[str] = None, destination_conn_id: Optional[str] = None, group_id: Optional[str] = None, num_parallel: Optional[int] = 1, session: Union[<a title="astro_extras.operators.session.ETLSession" href="session.html#astro_extras.operators.session.ETLSession">ETLSession</a>, airflow.models.xcom_arg.XComArg, ForwardRef(None)] = None, **kwargs) ‑> airflow.utils.task_group.TaskGroup</span>
+<span>def <span class="ident">transfer_tables</span></span>(<span>source_tables: List[Union[str, astro.table.Table]], target_tables: Optional[List[Union[str, astro.table.Table]]] = None, mode: Optional[Literal['default', 'delta', 'full']] = 'default', source_conn_id: Optional[str] = None, destination_conn_id: Optional[str] = None, group_id: Optional[str] = None, num_parallel: Optional[int] = 1, session: Union[<a title="astro_extras.operators.session.ETLSession" href="session.html#astro_extras.operators.session.ETLSession">ETLSession</a>, airflow.models.xcom_arg.XComArg, ForwardRef(None)] = None, **kwargs) ‑> airflow.utils.task_group.TaskGroup</span>
 </code></dt>
 <dd>
-<div class="desc"></div>
+<div class="desc"><p>Transfer multiple tables</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
 <pre><code class="python">def transfer_tables(
-        source_tables: Iterable[Union[str, Table]],
-        target_tables: Optional[Iterable[Union[str, Table]]] = None,
+        source_tables: List[Union[str, Table]],
+        target_tables: Optional[List[Union[str, Table]]] = None,
         mode: Optional[Literal[&#39;default&#39;, &#39;delta&#39;, &#39;full&#39;]] = &#39;default&#39;,
         source_conn_id: Optional[str] = None,
         destination_conn_id: Optional[str] = None,
@@ -507,6 +732,7 @@ If empty, all table data will be loaded.</dd>
         num_parallel: Optional[int] = 1,
         session: Union[XComArg, ETLSession, None] = None,
         **kwargs) -&gt; TaskGroup:
+    &#34;&#34;&#34; Transfer multiple tables &#34;&#34;&#34;
 
     if target_tables and len(target_tables) != len(source_tables):
         raise AirflowFailException(f&#39;Source and target tables list size must be equal&#39;)
@@ -584,15 +810,17 @@ If empty, all table data will be loaded.</dd>
         self.mode = mode
         self.session = session
 
-    def _get_sql(self, source_table: Table, source_db: BaseDatabase, session: ETLSession) -&gt; str:
+    def _get_sql(self, table: Table, db: BaseDatabase, session: ETLSession) -&gt; str:
         &#34;&#34;&#34; Internal - get a sql statement or template for given table &#34;&#34;&#34;
-        if (sql_file := get_table_template(source_table.name, &#39;.sql&#39;)):
+
+        if (sql_file := get_template_file(table.name, &#39;.sql&#39;)):
             self.log.info(f&#39;Using template file {sql_file}&#39;)
             return sql_file
-        
-        full_name = source_db.get_table_qualified_name(source_table)
+
+        full_name = db.get_table_qualified_name(table)
         if session:
             return &#39;select {{ti.xcom_pull(key=&#34;session&#34;).session_id}} as session_id, * from &#39; + full_name
+
         return &#39;select * from &#39; + full_name
 
     def execute(self, context: Context):
