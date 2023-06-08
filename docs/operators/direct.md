@@ -1,12 +1,10 @@
 # Direct
 
-[astro_extras Index](../../../README.md#astro_extras-index) /
-`src` /
-[Astro Extras](../index.md#astro-extras) /
+[Astro-sdk-extra Index](../README.md#astro-sdk-extra-index) /
 [Operators](./index.md#operators) /
 Direct
 
-> Auto-generated documentation for [src.astro_extras.operators.direct](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/direct.py) module.
+> Auto-generated documentation for [operators.direct](../../src/astro_extras/operators/direct.py) module.
 
 - [Direct](#direct)
   - [run_sql_template](#run_sql_template)
@@ -14,7 +12,7 @@ Direct
 
 ## run_sql_template
 
-[Show source in direct.py:20](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/direct.py#L20)
+[Show source in direct.py:20](../../src/astro_extras/operators/direct.py#L20)
 
 Runs an SQL script from template file.
 
@@ -61,7 +59,7 @@ def run_sql_template(template: str, conn_id: str, **kwargs) -> XComArg:
 
 ## run_sql_templates
 
-[Show source in direct.py:67](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/direct.py#L67)
+[Show source in direct.py:67](../../src/astro_extras/operators/direct.py#L67)
 
  Runs SQL scripts from multiple template files wrapping them up
 in Airflow's `TaskGroup`. See [run_sql_template](#run_sql_template) for details.

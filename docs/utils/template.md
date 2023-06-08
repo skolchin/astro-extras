@@ -1,12 +1,10 @@
 # Template
 
-[astro_extras Index](../../../README.md#astro_extras-index) /
-`src` /
-[Astro Extras](../index.md#astro-extras) /
+[Astro-sdk-extra Index](../README.md#astro-sdk-extra-index) /
 [Utils](./index.md#utils) /
 Template
 
-> Auto-generated documentation for [src.astro_extras.utils.template](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/utils/template.py) module.
+> Auto-generated documentation for [utils.template](../../src/astro_extras/utils/template.py) module.
 
 - [Template](#template)
   - [get_template](#get_template)
@@ -14,7 +12,7 @@ Template
 
 ## get_template
 
-[Show source in template.py:69](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/utils/template.py#L69)
+[Show source in template.py:69](../../src/astro_extras/utils/template.py#L69)
 
 Returns template content. See [get_template_file](#get_template_file) for details on templates.
 
@@ -78,7 +76,7 @@ def get_template(
 
 ## get_template_file
 
-[Show source in template.py:14](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/utils/template.py#L14)
+[Show source in template.py:14](../../src/astro_extras/utils/template.py#L14)
 
 Returns reference to DAG-specific template file, if one exists.
 

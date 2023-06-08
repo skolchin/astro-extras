@@ -1,12 +1,10 @@
 # Utils
 
-[astro_extras Index](../../../README.md#astro_extras-index) /
-`src` /
-[Astro Extras](../index.md#astro-extras) /
+[Astro-sdk-extra Index](../README.md#astro-sdk-extra-index) /
 [Utils](./index.md#utils) /
 Utils
 
-> Auto-generated documentation for [src.astro_extras.utils.utils](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/utils/utils.py) module.
+> Auto-generated documentation for [utils.utils](../../src/astro_extras/utils/utils.py) module.
 
 - [Utils](#utils)
   - [ensure_table](#ensure_table)
@@ -15,7 +13,7 @@ Utils
 
 ## ensure_table
 
-[Show source in utils.py:20](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/utils/utils.py#L20)
+[Show source in utils.py:20](../../src/astro_extras/utils/utils.py#L20)
 
 Ensure an object passed in is a table
 
@@ -30,7 +28,7 @@ def ensure_table(table: Union[str, Table], conn_id: Optional[str] = None) -> Tab
 
 ## schedule_ops
 
-[Show source in utils.py:31](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/utils/utils.py#L31)
+[Show source in utils.py:31](../../src/astro_extras/utils/utils.py#L31)
 
 Build a linked operators list
 
@@ -45,7 +43,7 @@ def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> BaseOpe
 
 ## split_table_name
 
-[Show source in utils.py:13](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/utils/utils.py#L13)
+[Show source in utils.py:13](../../src/astro_extras/utils/utils.py#L13)
 
 Splits table name to schema and table name
 

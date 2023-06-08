@@ -1,12 +1,10 @@
 # Session
 
-[astro_extras Index](../../../README.md#astro_extras-index) /
-`src` /
-[Astro Extras](../index.md#astro-extras) /
+[Astro-sdk-extra Index](../README.md#astro-sdk-extra-index) /
 [Operators](./index.md#operators) /
 Session
 
-> Auto-generated documentation for [src.astro_extras.operators.session](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py) module.
+> Auto-generated documentation for [operators.session](../../src/astro_extras/operators/session.py) module.
 
 - [Session](#session)
   - [CloseSessionOperator](#closesessionoperator)
@@ -24,7 +22,7 @@ Session
 
 ## CloseSessionOperator
 
-[Show source in session.py:156](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L156)
+[Show source in session.py:156](../../src/astro_extras/operators/session.py#L156)
 
 Session closing operator. Normally is used within [close_session](#close_session) function
 
@@ -42,7 +40,7 @@ class CloseSessionOperator(BaseOperator):
 
 ### CloseSessionOperator().execute
 
-[Show source in session.py:169](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L169)
+[Show source in session.py:169](../../src/astro_extras/operators/session.py#L169)
 
 #### Signature
 
@@ -55,7 +53,7 @@ def execute(self, context: Context):
 
 ## ETLSession
 
-[Show source in session.py:28](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L28)
+[Show source in session.py:28](../../src/astro_extras/operators/session.py#L28)
 
  Session data object. Holds all ETL session attributes, can be pushed to XCom.
 Implements context manager protocol (see examples).
@@ -100,7 +98,7 @@ class ETLSession:
 
 ### ETLSession.deserialize
 
-[Show source in session.py:80](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L80)
+[Show source in session.py:80](../../src/astro_extras/operators/session.py#L80)
 
 #### Signature
 
@@ -112,7 +110,7 @@ def deserialize(data, version: int):
 
 ### ETLSession().serialize
 
-[Show source in session.py:70](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L70)
+[Show source in session.py:70](../../src/astro_extras/operators/session.py#L70)
 
 #### Signature
 
@@ -125,7 +123,7 @@ def serialize(self):
 
 ## OpenSessionOperator
 
-[Show source in session.py:107](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L107)
+[Show source in session.py:107](../../src/astro_extras/operators/session.py#L107)
 
 Session opening operator. Normally is used within [open_session](#open_session) function
 
@@ -145,7 +143,7 @@ class OpenSessionOperator(BaseOperator):
 
 ### OpenSessionOperator().execute
 
-[Show source in session.py:140](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L140)
+[Show source in session.py:140](../../src/astro_extras/operators/session.py#L140)
 
 #### Signature
 
@@ -158,7 +156,7 @@ def execute(self, context: Context):
 
 ## close_session
 
-[Show source in session.py:291](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L291)
+[Show source in session.py:291](../../src/astro_extras/operators/session.py#L291)
 
 Closes the ETL session.
 
@@ -208,7 +206,7 @@ def close_session(
 
 ## ensure_session
 
-[Show source in session.py:344](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L344)
+[Show source in session.py:344](../../src/astro_extras/operators/session.py#L344)
 
  Returns current session. If a placeholder object returned by [open_session](#open_session) is passed in,
 retrieves actual session from XCom.
@@ -239,7 +237,7 @@ def ensure_session(
 
 ## get_current_session
 
-[Show source in session.py:332](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L332)
+[Show source in session.py:332](../../src/astro_extras/operators/session.py#L332)
 
 Retrieves current session from XCom.
 
@@ -266,7 +264,7 @@ def get_current_session(context: Optional[Context] = None) -> ETLSession:
 
 ## get_session_period
 
-[Show source in session.py:367](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L367)
+[Show source in session.py:367](../../src/astro_extras/operators/session.py#L367)
 
 Calculates ETL session loading period.
 
@@ -314,7 +312,7 @@ def get_session_period(context: Optional[Context] = None) -> Tuple[str, str]:
 
 ## open_session
 
-[Show source in session.py:190](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/session.py#L190)
+[Show source in session.py:190](../../src/astro_extras/operators/session.py#L190)
 
 Opens a new ETL session.
 

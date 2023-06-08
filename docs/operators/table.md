@@ -1,12 +1,10 @@
 # Table
 
-[astro_extras Index](../../../README.md#astro_extras-index) /
-`src` /
-[Astro Extras](../index.md#astro-extras) /
+[Astro-sdk-extra Index](../README.md#astro-sdk-extra-index) /
 [Operators](./index.md#operators) /
 Table
 
-> Auto-generated documentation for [src.astro_extras.operators.table](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/table.py) module.
+> Auto-generated documentation for [operators.table](../../src/astro_extras/operators/table.py) module.
 
 - [Table](#table)
   - [TableTransfer](#tabletransfer)
@@ -19,7 +17,7 @@ Table
 
 ## TableTransfer
 
-[Show source in table.py:26](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/table.py#L26)
+[Show source in table.py:26](../../src/astro_extras/operators/table.py#L26)
 
 Customized table transfer operator. Usually is used within [transfer_table](#transfer_table) function
 
@@ -40,7 +38,7 @@ class TableTransfer(GenericTransfer):
 
 ### TableTransfer().execute
 
-[Show source in table.py:76](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/table.py#L76)
+[Show source in table.py:76](../../src/astro_extras/operators/table.py#L76)
 
 #### Signature
 
@@ -53,7 +51,7 @@ def execute(self, context: Context):
 
 ## declare_tables
 
-[Show source in table.py:292](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/table.py#L292)
+[Show source in table.py:292](../../src/astro_extras/operators/table.py#L292)
 
 Convert list of string table names to list of `Table` objects
 
@@ -70,7 +68,7 @@ def declare_tables(
 
 ## load_table
 
-[Show source in table.py:98](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/table.py#L98)
+[Show source in table.py:98](../../src/astro_extras/operators/table.py#L98)
 
 Loads table into memory.
 
@@ -132,7 +130,7 @@ def load_table(
 
 ## save_table
 
-[Show source in table.py:167](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/table.py#L167)
+[Show source in table.py:167](../../src/astro_extras/operators/table.py#L167)
 
 Saves a table into database
 
@@ -153,7 +151,7 @@ def save_table(
 
 ## transfer_table
 
-[Show source in table.py:195](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/table.py#L195)
+[Show source in table.py:195](../../src/astro_extras/operators/table.py#L195)
 
 Cross-database data transfer.
 
@@ -254,7 +252,7 @@ def transfer_table(
 
 ## transfer_tables
 
-[Show source in table.py:300](https://github.com/skolchin/astro-extras/blob/main/src/astro_extras/operators/table.py#L300)
+[Show source in table.py:300](../../src/astro_extras/operators/table.py#L300)
 
 Transfer multiple tables
 
