@@ -1,0 +1,8 @@
+site_name: "astro_extras"
+repo_url: "https://github.com/skolchin/astro-extras"
+site_dir: "site"
+docs_dir: "docs"
+
+theme:
+  name: readthedocs
+  include_sidebar: true

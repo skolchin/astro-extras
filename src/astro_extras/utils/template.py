@@ -17,28 +17,28 @@ def get_template_file(
         dag: Optional[DAG] = None,
         fail_if_not_found: Optional[bool] = False) -> Optional[str]:
     
-    """ Returns reference to template file, if one exists.
+    """ Returns reference to DAG-specific template file, if one exists.
     
     This function looks up for a template file in `./templates/<dag_id>` folder
     under directory set as DAGS_HOME in Airflow config (usually `./dags`).
 
     Templates are used for SQL operations, html reporting and so on.
-    They consists of some plain-text content mixed with Jinja macros denoted by `{{}}` brackets,
-    which could be substituted ('rendered`) either by Airflow run-time or manually.
+    They consists of some plain-text content mixed with Jinja macros inside `{{...}}` brackets,
+    which will be substituted ('rendered`) with some variables either by Airflow runtime or manually.
 
     Args:
-        template:  Template name (e.g. table name or reporting object) without any extension
-        ext:    Template file extension, `.sql` by default
-        dag:    Optional DAG context
+        template:   Template name (e.g. table name or reporting object) without any extension
+        ext:        Template file extension, `.sql` by default
+        dag:        Optional DAG context
         fail_if_not_found: If `True`, `AirflowFailException` will be raised if template does not exist
             (default is `False`)
 
     Returns:
-        Name of template file relative to Airflow's DAG_HOME folder or `None` if no file was found
+        Name of template file relative to Airflow's `DAG_HOME` folder or `None` if no file was found
         and `fail_if_not_found = False`
 
     Examples:
-        If a `test_table` is to be processed in a `test-transfer` DAG, 
+        If a `test_table` is to be processed in DAG with `test-transfer` ID, 
         this SQL template could be used to add required `session_id` field 
         at the beginning of a target table:
 

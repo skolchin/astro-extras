@@ -203,19 +203,18 @@ def transfer_table(
     
     """ Cross-database data transfer.
 
-    This function transfers table data from one database to another,
-    implementing a cross-database geterogenous data transfer.
+    This function implements cross-database geterogenous data transfer.
 
     It reads data from source table into memory and then sequentaly inserts 
     each record into the target table. Fields order in the source and target tables 
-    must be identical and field types must be compatible, 
-    or transfer will fail or produce undesirable results.
+    must be identical and field types must be compatible, or transfer will fail or produce 
+    undesirable results.
 
     To limit data selection or customize fields, a SQL template could be 
     created for the source table (see `astro_extras.utils.template.get_template_file`).
     The template must ensure fields order and type compatibility with the target table.
-    If a `ETLSession` is been used, a `session_id` field must also be manually added
-    at proper place.
+    If transfer is running under `astro_extras.operators.session.ETLSession` context, 
+    a `session_id` field must also be manually added at proper place.
 
     For example, if these tables are to participate in transfer:
 
@@ -232,6 +231,8 @@ def transfer_table(
             If a string name is provided, it may contain schema definition denoted by `.`. 
             For `Table` objects, schema must be defined in `Metadata` field,
             otherwise Astro SDK might fall to use its default schema.
+            If a SQL template exists for this table name, it will be executed,
+            otherwise all table data will be selected.
 
         target: Either a table name or a `Table` object where data will be saved into.
             If a name is provided, it may contain schema definition denoted by `.`. 

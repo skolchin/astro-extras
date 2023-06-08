@@ -1,7 +1,7 @@
 # Astro SDK Extras project
 # (c) kol, 2023
 
-""" Direct SQL execution """
+""" Templated SQL execution """
 
 import logging
 from airflow.models.xcom_arg import XComArg
@@ -24,23 +24,25 @@ def run_sql_template(
 ) -> XComArg:
     """ Runs an SQL script from template file.
     
-    SQL script is a single SQL statement or multiple statements separated by ';',
-    which do not return anything (e.g. `INSERT`, `UPDATE` and so on).
+    SQL script is a single SQL statement or multiple statements 
+    to do something good within a single database.
 
-    This function renders given template and executes resulting SQL,
-    which might be used for in-database data transfers, modificiations and so on.
+    This function renders given template and executes resulting SQL. Templates are
+    text files with optional macros (see `astro_extras.utils.template.get_template_file`).
+    Templates are DAG specific.
+
+    Normally, only `INSERT`, `UPDATE` and DDL constructs are used,
+    but scope of statements is not limited. However, no data is ever returned to the caller,
+    use Astro SDK `run_raw_sql` or `astro_extras.operators.table.load_table` instead if needed.
 
     Args:
         template: Template name. This should be a base name of `.sql` file
-            located at <dags_home>/templates/<dag.dag_id> folder.
+            located at <dags_home>/templates/<dag.dag_id> folder
         conn_id:    Connection to database where to execute templated SQL
         kwargs:     Any extra keyword arguments passed to Astro SDK's `run_raw_sql` function
 
     Returns:
         Task wrapped in `XComArg`
-
-    See Also:
-        `astro_extras.utils.utils.get_template_file`
 
     Examples:
         This will execute file `./dags/templates/test_dag/test_template.sql` 
@@ -69,7 +71,22 @@ def run_sql_templates(
     num_parallel: Optional[int] = 1,
     **kwargs,
 ) -> TaskGroup:
-    """ Runs SQL scripts from multiple template files """
+    """ Runs SQL scripts from multiple template files wrapping them up
+    in Airflow's `TaskGroup`. See `run_sql_template` for details.
+
+    Args:
+        templates: List of template names, which are to be base names of `.sql` files
+            located at <dags_home>/templates/<dag.dag_id> folder
+        conn_id:    Connection to database where to execute templated SQL
+        group_id:   Optional `TaskGroup` id
+        num_parallel:   Expected number of parallel task sequences within a group.
+            For example, if 4 templates are to be processed, and `num_parallel=2`,
+            then 4 resulting tasks will be linked pairwise forming 2 separate chains.
+        kwargs:     Any extra keyword arguments passed to Astro SDK's `run_raw_sql` function
+
+    Returns:
+        Airflow `TaskGroup`
+    """
 
     with TaskGroup(group_id or 'run-sql', add_suffix_on_collision=True) as tg:
         ops_list = []
