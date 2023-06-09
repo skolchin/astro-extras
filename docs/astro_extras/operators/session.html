@@ -167,6 +167,7 @@ class OpenSessionOperator(BaseOperator):
         return op.execute(context)[0]
 
     def execute(self, context: Context):
+
         period_start, period_end = get_session_period(context)
         session_id = self._new_session(period_start, period_end, context)
         self.log.info(f&#39;New session {session_id} for period [{period_start},{period_end}] started&#39;)
@@ -1224,6 +1225,7 @@ def deserialize(data, version: int):
         return op.execute(context)[0]
 
     def execute(self, context: Context):
+
         period_start, period_end = get_session_period(context)
         session_id = self._new_session(period_start, period_end, context)
         self.log.info(f&#39;New session {session_id} for period [{period_start},{period_end}] started&#39;)
@@ -1262,6 +1264,7 @@ Context is the same dictionary used as when rendering jinja templates.</p>
 <span>Expand source code</span>
 </summary>
 <pre><code class="python">def execute(self, context: Context):
+
     period_start, period_end = get_session_period(context)
     session_id = self._new_session(period_start, period_end, context)
     self.log.info(f&#39;New session {session_id} for period [{period_start},{period_end}] started&#39;)

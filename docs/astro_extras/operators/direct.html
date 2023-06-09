@@ -38,6 +38,8 @@ from airflow.models.dag import DagContext
 from airflow.utils.task_group import TaskGroup
 
 from astro import sql as aql
+from astro.sql.table import Table
+from astro.airflow.datasets import kwargs_with_datasets
 
 from typing import Optional, Iterable
 
@@ -49,7 +51,9 @@ _logger = logging.getLogger(&#39;airflow.task&#39;)
 def run_sql_template(
     template: str,
     conn_id: str,
-    **kwargs,
+    input_tables: Optional[Iterable[Table]] = None,
+    affected_tables: Optional[Iterable[Table]] = None,
+    **kwargs
 ) -&gt; XComArg:
     &#34;&#34;&#34; Runs an SQL script from template file.
     
@@ -85,7 +89,9 @@ def run_sql_template(
     @aql.run_raw_sql(conn_id=conn_id,
                     task_id=f&#39;run-{template}&#39;,
                     response_size=0,
-                    **kwargs)
+                    **kwargs_with_datasets(kwargs=kwargs, 
+                               input_datasets=input_tables,
+                               output_datasets=affected_tables))
     def _run_sql(template: str):
         sql = get_template(template, &#39;.sql&#39;, dag=dag, fail_if_not_found=True)
         _logger.info(f&#39;Executing: {sql}&#39;)
@@ -134,7 +140,7 @@ def run_sql_templates(
 <h2 class="section-title" id="header-functions">Functions</h2>
 <dl>
 <dt id="astro_extras.operators.direct.run_sql_template"><code class="name flex">
-<span>def <span class="ident">run_sql_template</span></span>(<span>template: str, conn_id: str, **kwargs) ‑> airflow.models.xcom_arg.XComArg</span>
+<span>def <span class="ident">run_sql_template</span></span>(<span>template: str, conn_id: str, input_tables: Optional[Iterable[astro.table.Table]] = None, affected_tables: Optional[Iterable[astro.table.Table]] = None, **kwargs) ‑> airflow.models.xcom_arg.XComArg</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Runs an SQL script from template file.</p>
@@ -173,7 +179,9 @@ on <code>target_db</code> connection:</p>
 <pre><code class="python">def run_sql_template(
     template: str,
     conn_id: str,
-    **kwargs,
+    input_tables: Optional[Iterable[Table]] = None,
+    affected_tables: Optional[Iterable[Table]] = None,
+    **kwargs
 ) -&gt; XComArg:
     &#34;&#34;&#34; Runs an SQL script from template file.
     
@@ -209,7 +217,9 @@ on <code>target_db</code> connection:</p>
     @aql.run_raw_sql(conn_id=conn_id,
                     task_id=f&#39;run-{template}&#39;,
                     response_size=0,
-                    **kwargs)
+                    **kwargs_with_datasets(kwargs=kwargs, 
+                               input_datasets=input_tables,
+                               output_datasets=affected_tables))
     def _run_sql(template: str):
         sql = get_template(template, &#39;.sql&#39;, dag=dag, fail_if_not_found=True)
         _logger.info(f&#39;Executing: {sql}&#39;)

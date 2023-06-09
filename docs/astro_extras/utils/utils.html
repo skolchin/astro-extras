@@ -34,9 +34,7 @@
 
 from itertools import pairwise, groupby
 from airflow.models import BaseOperator
-
-from astro.sql.table import Table, Metadata
-
+from astro.sql.table import BaseTable, Table, Metadata
 from typing import Union, Tuple, Optional, List
 
 def split_table_name(table: str) -&gt; Tuple[Optional[str], str]:
@@ -46,19 +44,19 @@ def split_table_name(table: str) -&gt; Tuple[Optional[str], str]:
     parts = table.split(&#39;.&#39;, 1)
     return tuple(parts) if len(parts) &gt; 1 else (None, parts[0])
 
-def ensure_table(table: Union[str, Table], conn_id: Optional[str] = None) -&gt; Table:
-    &#34;&#34;&#34; Ensure an object passed in is a table&#34;&#34;&#34;
+def ensure_table(table: Union[str, BaseTable], conn_id: Optional[str] = None) -&gt; BaseTable:
+    &#34;&#34;&#34; Ensure an object is a table &#34;&#34;&#34;
     if table is None:
         return None
-    if isinstance(table, Table):
+    if isinstance(table, BaseTable):
         return table
     if isinstance(table, str):
         schema, table = split_table_name(table)
         return Table(table, conn_id=conn_id, metadata=Metadata(schema=schema))
-    raise TypeError(f&#39;Either str or Table expected, {table.__class__.__name__} found&#39;)
+    raise TypeError(f&#39;Either str or BaseTable expected, {table.__class__.__name__} found&#39;)
 
-def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -&gt; BaseOperator:
-    &#34;&#34;&#34; Build a linked operators list &#34;&#34;&#34;
+def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -&gt; List[BaseOperator]:
+    &#34;&#34;&#34; Build parallel operator chains. Returns list of last operators in each chain. &#34;&#34;&#34;
 
     if not ops_list:
         raise ValueError(&#39;Empty list&#39;)
@@ -84,37 +82,37 @@ def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -&gt; Base
 <h2 class="section-title" id="header-functions">Functions</h2>
 <dl>
 <dt id="astro_extras.utils.utils.ensure_table"><code class="name flex">
-<span>def <span class="ident">ensure_table</span></span>(<span>table: Union[str, astro.table.Table], conn_id: Optional[str] = None) ‑> astro.table.Table</span>
+<span>def <span class="ident">ensure_table</span></span>(<span>table: Union[str, astro.table.BaseTable], conn_id: Optional[str] = None) ‑> astro.table.BaseTable</span>
 </code></dt>
 <dd>
-<div class="desc"><p>Ensure an object passed in is a table</p></div>
+<div class="desc"><p>Ensure an object is a table</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def ensure_table(table: Union[str, Table], conn_id: Optional[str] = None) -&gt; Table:
-    &#34;&#34;&#34; Ensure an object passed in is a table&#34;&#34;&#34;
+<pre><code class="python">def ensure_table(table: Union[str, BaseTable], conn_id: Optional[str] = None) -&gt; BaseTable:
+    &#34;&#34;&#34; Ensure an object is a table &#34;&#34;&#34;
     if table is None:
         return None
-    if isinstance(table, Table):
+    if isinstance(table, BaseTable):
         return table
     if isinstance(table, str):
         schema, table = split_table_name(table)
         return Table(table, conn_id=conn_id, metadata=Metadata(schema=schema))
-    raise TypeError(f&#39;Either str or Table expected, {table.__class__.__name__} found&#39;)</code></pre>
+    raise TypeError(f&#39;Either str or BaseTable expected, {table.__class__.__name__} found&#39;)</code></pre>
 </details>
 </dd>
 <dt id="astro_extras.utils.utils.schedule_ops"><code class="name flex">
-<span>def <span class="ident">schedule_ops</span></span>(<span>ops_list: List[airflow.models.baseoperator.BaseOperator], num_parallel: int = 1) ‑> airflow.models.baseoperator.BaseOperator</span>
+<span>def <span class="ident">schedule_ops</span></span>(<span>ops_list: List[airflow.models.baseoperator.BaseOperator], num_parallel: int = 1) ‑> List[airflow.models.baseoperator.BaseOperator]</span>
 </code></dt>
 <dd>
-<div class="desc"><p>Build a linked operators list</p></div>
+<div class="desc"><p>Build parallel operator chains. Returns list of last operators in each chain.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -&gt; BaseOperator:
-    &#34;&#34;&#34; Build a linked operators list &#34;&#34;&#34;
+<pre><code class="python">def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -&gt; List[BaseOperator]:
+    &#34;&#34;&#34; Build parallel operator chains. Returns list of last operators in each chain. &#34;&#34;&#34;
 
     if not ops_list:
         raise ValueError(&#39;Empty list&#39;)
