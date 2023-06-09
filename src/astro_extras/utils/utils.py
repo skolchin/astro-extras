@@ -5,9 +5,7 @@
 
 from itertools import pairwise, groupby
 from airflow.models import BaseOperator
-
-from astro.sql.table import Table, Metadata
-
+from astro.sql.table import BaseTable, Table, Metadata
 from typing import Union, Tuple, Optional, List
 
 def split_table_name(table: str) -> Tuple[Optional[str], str]:
@@ -17,19 +15,19 @@ def split_table_name(table: str) -> Tuple[Optional[str], str]:
     parts = table.split('.', 1)
     return tuple(parts) if len(parts) > 1 else (None, parts[0])
 
-def ensure_table(table: Union[str, Table], conn_id: Optional[str] = None) -> Table:
-    """ Ensure an object passed in is a table"""
+def ensure_table(table: Union[str, BaseTable], conn_id: Optional[str] = None) -> BaseTable:
+    """ Ensure an object is a table """
     if table is None:
         return None
-    if isinstance(table, Table):
+    if isinstance(table, BaseTable):
         return table
     if isinstance(table, str):
         schema, table = split_table_name(table)
         return Table(table, conn_id=conn_id, metadata=Metadata(schema=schema))
-    raise TypeError(f'Either str or Table expected, {table.__class__.__name__} found')
+    raise TypeError(f'Either str or BaseTable expected, {table.__class__.__name__} found')
 
-def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> BaseOperator:
-    """ Build a linked operators list """
+def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> List[BaseOperator]:
+    """ Build parallel operator chains. Returns list of last operators in each chain. """
 
     if not ops_list:
         raise ValueError('Empty list')

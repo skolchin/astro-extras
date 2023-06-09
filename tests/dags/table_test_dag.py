@@ -16,8 +16,8 @@ with DAG(
     catchup=False,
 ) as dag:
 
-    input_table = Table('dict_types', conn_id='source_db', metadata=Metadata(schema='public'))
-    output_table = Table('tmp_dict_types', conn_id='target_db', metadata=Metadata(schema='public'))
+    input_table = Table('types', conn_id='source_db', metadata=Metadata(schema='public'))
+    output_table = Table('tmp_types', conn_id='target_db', metadata=Metadata(schema='public'))
 
     @aql.dataframe
     def modify_data(data: pd.DataFrame):
@@ -35,5 +35,5 @@ with DAG(
     catchup=False,
 ) as dag:
 
-    data = load_table('public.dict_types', 'source_db')
-    save_table(data, 'public.tmp_dict_types2', conn_id='target_db')
+    data = load_table('public.types', 'source_db')
+    save_table(data, 'public.tmp_types2', conn_id='target_db')

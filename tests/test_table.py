@@ -12,7 +12,7 @@ def test_table_load_save(docker_ip, docker_services, airflow_credentials, target
     assert result == 'success'
 
     with target_db.begin() as conn:
-        data = pd.read_sql_table('tmp_dict_types', conn)
+        data = pd.read_sql_table('tmp_types', conn)
         assert data.shape[0] == 3
         assert 'some_column' in data.columns
 

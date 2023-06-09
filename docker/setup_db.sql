@@ -1,6 +1,8 @@
+--
+-- Airflow DB setup
+--
 create database airflow;
-create database source_db;
-create database target_db;
+comment on database airflow is 'Internal Airflow database';
 
 \c airflow
 
@@ -24,54 +26,120 @@ values
 	 ('target_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
 	 ('source_db','postgres','','postgres','source_db','postgres','918ja620_82',5432,false,false,'');
 
+--
+-- Marquez DB setup
+--
+-- create user marquez with encrypted password 'marquez';
+-- create database marquez with owner marquez;
+-- comment on database marquez is 'Internal Marquez database';
+
+--
+-- Source DB setup
+--
+create database source_db;
+comment on database source_db is 'Source data';
+
 \c source_db
 
-create table public.dict_types(
+create table public.types(
     type_id serial not null primary key,
     type_name text not null
 );
+comment on table public.types is 'Source data type dictionary table';
 
 create table public.table_data(
     id serial not null primary key,
-    type_id int not null references dict_types(type_id),
+    type_id int not null references types(type_id),
     comments text not null,
     created_ts timestamp not null default current_timestamp,
     modified_ts timestamp null
 );
+comment on table public.table_data is 'Source data table';
 
-insert into public.dict_types(type_id, type_name)
+insert into public.types(type_id, type_name)
 values (1, 'Type 1'), (2, 'Type 2'), (3, 'Type 3');
 
-insert into public.table_data(type_id, comments)
-select floor(random()*3) + 1, md5(random()::text)
+insert into public.table_data(type_id, comments, created_ts)
+select floor(random()*3) + 1, md5(random()::text), current_timestamp - '1 day'::interval
 from generate_series(1, 1000);
 
-\c target_db
+--
+-- Target DB setup
+--
+create database target_db;
+comment on database target_db is 'Target data (dwh)';
 
-create schema stage;
+\c target_db
 
 create table public.sessions(
     session_id serial not null primary key,
     source text not null,
     target text not null,
-    period timestamptz[2] not null,
+    period timestamp[2] not null,
     run_id text,
-    started timestamptz not null default current_timestamp,
-    finished timestamptz,
+    started timestamp not null default current_timestamp,
+    finished timestamp,
     status varchar(10) not null default 'running' check (status in ('running', 'success', 'error'))
 );
+comment on table public.sessions is 'Sessions';
 
-create table stage.dict_types(
+create schema stage;
+comment on schema stage is 'Staging area';
+
+create table stage.types(
     session_id int not null references public.sessions(session_id),
     type_id int not null,
     type_name text not null
 );
+comment on table stage.types is 'Staged types table';
+
+create view stage.types_a as
+    select distinct on (t.type_id) t.*
+    from stage.types t
+    inner join public.sessions s on s.session_id = t.session_id and s.status = 'success'
+    order by t.type_id, t.session_id desc;
+
+comment on view stage.types_a is 'Actual data from staged types table';
 
 create table stage.table_data(
     session_id int not null references public.sessions(session_id),
     id int not null,
     type_id int not null,
     comments text not null,
-    created_ts timestamptz not null default current_timestamp,
-    modified_ts timestamptz null
+    created_ts timestamp not null default current_timestamp,
+    modified_ts timestamp null
 );
+comment on table stage.table_data is 'Staged data';
+
+create view stage.table_data_a as
+    select distinct on (t.id) t.*
+    from stage.table_data t
+    inner join public.sessions s on s.session_id = t.session_id and s.status = 'success'
+    order by t.id, t.session_id desc;
+
+comment on view stage.table_data_a is 'Actual staged data';
+
+
+create schema dwh;
+comment on schema dwh is 'Processed data area';
+
+create table dwh.dim_types(
+    type_id serial not null primary key,
+    session_id int not null,
+    effective_from timestamp not null default current_timestamp,
+    effective_to timestamp null,
+    src_id int not null,
+    type_name text not null
+);
+comment on table dwh.dim_types is 'Time-dependent types dictionary';
+
+create table dwh.data_facts(
+    fact_id serial not null primary key,
+    fact_dttm timestamp not null default current_timestamp,
+    session_id int not null,
+    type_id int not null references dwh.dim_types(type_id),
+    num_records int not null
+);
+comment on table dwh.data_facts is 'Fact table';
+
+create unique index data_facts_uq_idx on dwh.data_facts(type_id);

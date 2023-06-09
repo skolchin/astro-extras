@@ -9,6 +9,8 @@ from airflow.models.dag import DagContext
 from airflow.utils.task_group import TaskGroup
 
 from astro import sql as aql
+from astro.sql.table import Table
+from astro.airflow.datasets import kwargs_with_datasets
 
 from typing import Optional, Iterable
 
@@ -20,7 +22,9 @@ _logger = logging.getLogger('airflow.task')
 def run_sql_template(
     template: str,
     conn_id: str,
-    **kwargs,
+    input_tables: Optional[Iterable[Table]] = None,
+    affected_tables: Optional[Iterable[Table]] = None,
+    **kwargs
 ) -> XComArg:
     """ Runs an SQL script from template file.
     
@@ -56,7 +60,9 @@ def run_sql_template(
     @aql.run_raw_sql(conn_id=conn_id,
                     task_id=f'run-{template}',
                     response_size=0,
-                    **kwargs)
+                    **kwargs_with_datasets(kwargs=kwargs, 
+                               input_datasets=input_tables,
+                               output_datasets=affected_tables))
     def _run_sql(template: str):
         sql = get_template(template, '.sql', dag=dag, fail_if_not_found=True)
         _logger.info(f'Executing: {sql}')

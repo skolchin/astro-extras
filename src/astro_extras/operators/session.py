@@ -138,6 +138,7 @@ class OpenSessionOperator(BaseOperator):
         return op.execute(context)[0]
 
     def execute(self, context: Context):
+
         period_start, period_end = get_session_period(context)
         session_id = self._new_session(period_start, period_end, context)
         self.log.info(f'New session {session_id} for period [{period_start},{period_end}] started')
