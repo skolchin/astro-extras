@@ -4,6 +4,8 @@
 """ Table operations """
 
 import pandas as pd
+import logging
+from airflow.hooks.base import BaseHook
 from airflow.models.xcom_arg import XComArg
 from airflow.models.dag import DagContext
 from airflow.operators.generic_transfer import GenericTransfer
@@ -13,7 +15,7 @@ from airflow.exceptions import AirflowFailException
 
 from astro import sql as aql
 from astro.databases import create_database
-from astro.sql.table import Table
+from astro.sql.table import BaseTable, Table
 from astro.databases.base import BaseDatabase
 from astro.airflow.datasets import kwargs_with_datasets
 
@@ -22,21 +24,22 @@ from typing import Union, Literal, Optional, Iterable, List
 from .session import ETLSession, ensure_session
 from ..utils.utils import ensure_table, schedule_ops
 from ..utils.template import get_template_file
+from ..utils.data_compare import compare_datasets
 
 class TableTransfer(GenericTransfer):
     """ Customized table transfer operator. Usually is used within `transfer_table` function """
 
-    template_fields = ("sql", "preoperator", "source_table", "destination_table")
+    template_fields = ("sql", "preoperator", "source_table", "destination_table", "destination_sql")
     template_ext = (".sql", ".hql" )
-    template_fields_renderers = {"sql": "sql", "preoperator": "sql"}
+    template_fields_renderers = {"sql": "sql", "preoperator": "sql", "destination_sql": "sql"}
     ui_color = "#b0f07c"
 
     def __init__(
         self,
         *,
-        source_table: Table,
-        destination_table: Table,
-        mode: Optional[Literal['default', 'delta', 'full']] = 'default',
+        source_table: BaseTable,
+        destination_table: BaseTable,
+        mode: Optional[Literal['default', 'dict', 'sync']] = 'default',
         session: Optional[ETLSession] = None,
         **kwargs,
     ) -> None:
@@ -46,6 +49,7 @@ class TableTransfer(GenericTransfer):
 
         task_id = kwargs.pop('task_id', f'transfer-{source_table.name}')
         sql = kwargs.pop('sql', self._get_sql(source_table, source_db, session))
+        dest_sql = kwargs.pop('destination_sql', self._get_sql(destination_table, dest_db, suffix='_a'))
 
         super().__init__(task_id=task_id,
                          sql=sql,
@@ -54,26 +58,48 @@ class TableTransfer(GenericTransfer):
                          destination_conn_id=destination_table.conn_id,
                          **kwargs)
 
-        self.source = source_table
-        self.source_table = source_db.get_table_qualified_name(source_table)
-        self.destination = destination_table
-        self.mode = mode
-        self.session = session
+        self.source: BaseTable = source_table
+        self.source_table: str = source_db.get_table_qualified_name(self.source)
+        self.destination: BaseTable = destination_table
+        # self.destination_table is set by super().__init__()
+        self.destination_sql: str = dest_sql
+        self.mode: str = mode
+        self.session: ETLSession = session
 
-    def _get_sql(self, table: Table, db: BaseDatabase, session: ETLSession) -> str:
+    def _get_sql(self, table: Table, db: BaseDatabase, session: ETLSession = None, suffix: str = None) -> str:
         """ Internal - get a sql statement or template for given table """
 
         if (sql_file := get_template_file(table.name, '.sql')):
             self.log.info(f'Using template file {sql_file}')
             return sql_file
 
-        full_name = db.get_table_qualified_name(table)
+        full_name = db.get_table_qualified_name(table) + (suffix or '')
         if session:
             return 'select {{ti.xcom_pull(key="session").session_id}} as session_id, * from ' + full_name
 
         return 'select * from ' + full_name
 
+    def _compare_datasets(self, stop_on_first_diff: bool) -> bool:
+
+        self.log.info(f'Comparing source {self.source_table} with target {self.destination_table}')
+        src = BaseHook.get_hook(self.source_conn_id)
+        dest = BaseHook.get_hook(self.destination_conn_id)
+
+        self.log.info(f'Executing: {self.sql}')
+        df_src = src.get_pandas_df(self.sql)
+
+        self.log.info(f'Executing: {self.destination_sql}')
+        df_trg = dest.get_pandas_df(self.destination_sql)
+        self.log.info(f'Number of records: {df_src.shape[0]} / {df_trg.shape[0]}')
+
+        return compare_datasets(df_src, df_trg, stop_on_first_diff=stop_on_first_diff)
+
     def execute(self, context: Context):
+
+        if context['dag_run'].conf.get('debug'):
+            self.log.setLevel(logging.DEBUG)
+            logging.getLogger('airflow.task').setLevel(logging.DEBUG)
+
         self.session = ensure_session(self.session, context)
         if self.session:
             if not self.source_conn_id:
@@ -88,15 +114,17 @@ class TableTransfer(GenericTransfer):
         if self.source_conn_id == self.destination_conn_id and self.source_table == self.destination_table:
             raise AirflowFailException('Source and destination must not be the same')
 
-        # TODO: more transfer modes
         match self.mode:
             case 'default':
                 return super().execute(context)
+            case 'dict':
+                if not self._compare_datasets(stop_on_first_diff=True):
+                    return super().execute(context)
             case _:
                 raise AirflowFailException(f'Invalid or unsupported transfer mode: {self.mode}')
 
 def load_table(
-        table: Union[str, Table],
+        table: Union[str, BaseTable],
         conn_id: Optional[str] = None,
         session: Optional[ETLSession] = None,
         sql: Optional[str] = None) -> XComArg:
@@ -141,7 +169,7 @@ def load_table(
         >>> save_table(modified_data, conn_id='target_db')
     """
 
-    if not isinstance(table, Table):
+    if not isinstance(table, BaseTable):
         dag = DagContext.get_current_dag()
         @aql.run_raw_sql(handler=lambda result: result.fetchall(),
                         conn_id=conn_id,
@@ -166,19 +194,16 @@ def load_table(
 
 def save_table(
         data: XComArg,
-        table: Union[str, Table],
+        table: Union[str, BaseTable],
         conn_id: Optional[str] = None,
         session: Optional[ETLSession] = None,
         fail_if_not_exist: Optional[bool] = True) -> XComArg:
     """ Saves a table into database """
 
-    if isinstance(table, Table):
-        task_id = f'save-{table.name}'
-    else:
-        task_id = f'save-{table}'
-        table = ensure_table(table, conn_id)
-
+    table = ensure_table(table, conn_id)
+    task_id = f'save-{table.name}'
     conn_id = conn_id or table.conn_id
+
     @aql.dataframe(if_exists='append', conn_id=conn_id, task_id=task_id)
     def _save_data(data: pd.DataFrame, session: ETLSession):
         if fail_if_not_exist:
@@ -195,7 +220,7 @@ def save_table(
 def transfer_table(
         source: Union[str, Table],
         target: Union[str, Table, None] = None,
-        mode: Optional[Literal['default', 'delta', 'full']] = 'default',
+        mode: Optional[Literal['default', 'dict', 'sync']] = 'default',
         source_conn_id: Optional[str] = None,
         destination_conn_id: Optional[str] = None,
         session: Union[XComArg, ETLSession, None] = None,
@@ -300,7 +325,7 @@ def declare_tables(
 def transfer_tables(
         source_tables: List[Union[str, Table]],
         target_tables: Optional[List[Union[str, Table]]] = None,
-        mode: Optional[Literal['default', 'delta', 'full']] = 'default',
+        mode: Optional[Literal['default', 'dict', 'full']] = 'default',
         source_conn_id: Optional[str] = None,
         destination_conn_id: Optional[str] = None,
         group_id: Optional[str] = None,

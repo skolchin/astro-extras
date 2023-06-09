@@ -37,3 +37,6 @@ from .utils.datetime_local import (
     datetime_to_tz,
     datetime_to_naive
 )
+from .utils.data_compare import (
+    compare_datasets
+)
