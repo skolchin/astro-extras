@@ -1,1 +1,2 @@
 astro-sdk-python[postgres]>=1.6.0
+# openlineage-airflow
