@@ -66,7 +66,7 @@ with DAG(
 
         deserialized_tables = test_data.deserialize_tables(serialized_tables)
 
-        deserialized_tables = [test_data.create_sqla_table_object(
+        deserialized_tables = [test_data.create_astro_table_object(
             table['name'], test_data.metadata, table['columns']) for table in deserialized_tables]
 
         test_data.create_tables(deserialized_tables)
@@ -102,7 +102,7 @@ with DAG(
 
         deserialized_tables = test_data.deserialize_tables(serialized_tables)
 
-        deserialized_tables = [test_data.create_sqla_table_object(
+        deserialized_tables = [test_data.create_astro_table_object(
             table['name'], test_data.metadata, table['columns']) for table in deserialized_tables]
 
         test_data.create_tables(deserialized_tables)

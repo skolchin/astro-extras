@@ -34,8 +34,8 @@ class TestData:
         return pd.DataFrame(data)
 
     @staticmethod
-    def create_sqla_table_object(name: str, metadata: Metadata, columns: List[Column]) -> Table:
-        # Create a new sqlalchemy table object with the given name, metadata and columns
+    def create_astro_table_object(name: str, metadata: Metadata, columns: List[Column]) -> Table:
+        # Create a new astro table object with the given name, metadata and columns
         return Table(name=name, metadata=metadata, columns=columns)
 
     @staticmethod
@@ -60,7 +60,7 @@ class TestData:
         def create_and_load_table(table_name: str, num_rows: int, num_cols: int, metadata, conn_id):
             # Create a new table with the given name, metadata and columns, load it into the database
             columns = self.generate_columns(num_cols)
-            table = self.create_sqla_table_object(table_name, metadata, columns)
+            table = self.create_astro_table_object(table_name, metadata, columns)
             db = self.conn_to_postrges(conn_id)
 
             # Generate data for the table and load it into the database
