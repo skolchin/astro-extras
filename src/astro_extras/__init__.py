@@ -40,3 +40,6 @@ from .utils.datetime_local import (
 from .utils.data_compare import (
     compare_datasets
 )
+from .utils.test_data import (
+    TestData
+)
