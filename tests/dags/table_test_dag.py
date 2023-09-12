@@ -42,72 +42,17 @@ with DAG(
     save_table(data, 'public.tmp_dict_types2', conn_id='target_db')
 
 with DAG(
-    dag_id='test-transfer-table',
-    start_date=pendulum.today().add(days=-1),
-    schedule=None,
-    catchup=False,
-) as dag:
-    @dag.task
-    def create_source_tables_with_data(**context):
-        test_data = TestData('source_db')
-        tables: List[str] = test_data.generate_tables_and_uppend_to_db(
-            20, 50, name_tables=['test_table'])
-
-        serialized_tables = test_data.serialize_tables(tables)
-
-        context['ti'].xcom_push(key='data', value=serialized_tables)
-
-    @dag.task
-    def create_target_tables(**context):
-        test_data = TestData('target_db')
-
-        serialized_tables = context['ti'].xcom_pull(
-            key='data', task_ids='create_source_tables_with_data')
-
-        deserialized_tables = test_data.deserialize_tables(serialized_tables)
-
-        deserialized_tables = [test_data.create_astro_table_object(
-            table['name'], test_data.metadata, table['columns']) for table in deserialized_tables]
-
-        test_data.create_tables(deserialized_tables)
-
-    create_source_tables_with_data() >>\
-        create_target_tables() >>\
-        transfer_table(source='test_table', target='test_table', source_conn_id='source_db',
-                       destination_conn_id='target_db')
-
-
-with DAG(
     dag_id='test-transfer-tables',
     start_date=pendulum.today().add(days=-1),
     schedule=None,
     catchup=False,
-) as dag:
+) as dag, TestData('source_db', dest_conn_id='target_db', num_cols=20, num_rows=50, name_tables=['test_table', 'test_tables_1', 'test_tables_2', 'test_tables_3']) as data:
     @dag.task
-    def create_source_tables_with_data(**context):
-        test_data = TestData('source_db')
-        tables: List[str] = test_data.generate_tables_and_uppend_to_db(
-            20, 50, name_tables=['test_tables_1', 'test_tables_2', 'test_tables_3'])
+    def create_tables(**context):
+        # Create source table with data and target table without data
+        data.append_tables_to_db()
 
-        serialized_tables = test_data.serialize_tables(tables)
+    create_tables() >>\
+        transfer_table(source='test_table', target='test_table', source_conn_id='source_db', destination_conn_id='target_db') >>\
+                    transfer_tables(source_tables=['test_tables_1', 'test_tables_2', 'test_tables_3'], source_conn_id='source_db', destination_conn_id='target_db')
 
-        context['ti'].xcom_push(key='data', value=serialized_tables)
-
-    @dag.task
-    def create_target_tables(**context):
-        test_data = TestData('target_db')
-
-        serialized_tables = context['ti'].xcom_pull(
-            key='data', task_ids='create_source_tables_with_data')
-
-        deserialized_tables = test_data.deserialize_tables(serialized_tables)
-
-        deserialized_tables = [test_data.create_astro_table_object(
-            table['name'], test_data.metadata, table['columns']) for table in deserialized_tables]
-
-        test_data.create_tables(deserialized_tables)
-
-    create_source_tables_with_data() >>\
-        create_target_tables() >>\
-        transfer_tables(source_tables=['test_tables_1', 'test_tables_2', 'test_tables_3'],
-                        source_conn_id='source_db', destination_conn_id='target_db')

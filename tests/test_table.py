@@ -113,47 +113,6 @@ def test_table_declare_tables():
     for i in res:
         assert isinstance(i, Table)
 
-def test_transfer_table(docker_ip, docker_services, airflow_credentials, source_db, target_db):
-    # Test function to transfer tables.
-
-    logger.info(f'Testing transfer table function')
-
-    # Trigger DAG "test-transfer-table".
-    res_dag_run = run_dag('test-transfer-table', docker_ip, docker_services, airflow_credentials)
-
-    assert res_dag_run
-
-    # Create connections to source and target databases.
-    with source_db.connect() as src_conn,\
-         target_db.connect() as tgt_conn:
-
-        table_name = 'test_table'
-
-        # Get metadata of tables in source and target databases.
-        meta_src = MetaData(bind=src_conn)
-        meta_tgt = MetaData(bind=tgt_conn)
-
-        meta_src.reflect()
-        meta_tgt.reflect()
-
-        # Check if required tables exist in source and target databases.
-        assert table_name in meta_src.tables
-        assert table_name in meta_tgt.tables
-
-        # Get source table object from metadata of source database.
-        table_src = sqlaTable(table_name, meta_src)
-
-        # Get target table object from metadata of target database.
-        table_tgt = sqlaTable(table_name, meta_tgt)
-
-        # Check if schema of source and target tables match.
-        assert compare_table_schemas(table_src, table_tgt)
-
-        assert compare_table_contents(table_src, table_tgt)
-
-        # Check if row count of source and target tables match.
-        assert get_table_row_count(table_src) == get_table_row_count(table_tgt)
-
 def test_transfer_tables(docker_ip, docker_services, airflow_credentials, source_db, target_db):
     # Test function to transfer tables.
 
@@ -169,7 +128,7 @@ def test_transfer_tables(docker_ip, docker_services, airflow_credentials, source
     with source_db.connect() as src_conn,\
          target_db.connect() as tgt_conn:
 
-        lst_tables = ['test_tables_1', 'test_tables_2', 'test_tables_3']
+        lst_tables = ['test_table', 'test_tables_1', 'test_tables_2', 'test_tables_3']
         
         # Get metadata of tables in source and target databases.
         meta_src = MetaData(bind=src_conn)
