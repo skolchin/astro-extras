@@ -1,2 +1,4 @@
 pytest
 pytest-docker
+astro-sdk-python[postgres]>=1.6.0
+apache-airflow[pandas,postgres]>=2.7.0

@@ -6,7 +6,7 @@
 import os
 import pytest
 from pytest_docker.plugin import get_cleanup_command
-from test_utils import *
+from confsupport import *
 
 def pytest_addoption(parser):
     parser.addoption('--keep', action='store_true', default=False, 
@@ -21,8 +21,12 @@ def docker_compose_command():
     return "docker compose"
 
 @pytest.fixture(scope="session")
-def docker_cleanup(keep_docker):
-    return get_cleanup_command() if not keep_docker else None
+def docker_cleanup(keep_docker, docker_compose_file):
+    if not keep_docker:
+        return get_cleanup_command() 
+    
+    logger.warning(f'To stop test docker run: docker compose down {docker_compose_file} -v')
+    return None
 
 @pytest.fixture(scope="session")
 def docker_compose_file(pytestconfig):

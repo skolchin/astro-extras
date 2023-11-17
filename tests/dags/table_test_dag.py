@@ -4,11 +4,11 @@
 import pendulum
 import pandas as pd
 
-from typing import List
 from airflow.models import DAG
 from astro import sql as aql
 from astro.sql.table import Table, Metadata
-from astro_extras import load_table, save_table, transfer_table, transfer_tables, TestData
+from astro_extras import load_table, save_table, transfer_table, transfer_tables
+from astro_extras.tests.test_data import TestData
 
 with DAG(
     dag_id='test-table-load_save',
@@ -17,9 +17,9 @@ with DAG(
     catchup=False,
 ) as dag:
 
-    input_table = Table('dict_types', conn_id='source_db',
+    input_table = Table('types', conn_id='source_db',
                         metadata=Metadata(schema='public'))
-    output_table = Table('tmp_dict_types', conn_id='target_db',
+    output_table = Table('tmp_types', conn_id='target_db',
                          metadata=Metadata(schema='public'))
 
     @aql.dataframe
@@ -38,15 +38,18 @@ with DAG(
     catchup=False,
 ) as dag:
 
-    data = load_table('public.dict_types', 'source_db')
-    save_table(data, 'public.tmp_dict_types2', conn_id='target_db')
+    data = load_table('public.types', 'source_db')
+    save_table(data, 'public.tmp_types2', conn_id='target_db')
 
 with DAG(
     dag_id='test-transfer-tables',
     start_date=pendulum.today().add(days=-1),
     schedule=None,
     catchup=False,
-) as dag, TestData('source_db', dest_conn_id='target_db', num_cols=20, num_rows=50, name_tables=['test_table', 'test_tables_1', 'test_tables_2', 'test_tables_3']) as data:
+) as dag, \
+    TestData('source_db', dest_conn_id='target_db', num_cols=20, num_rows=50, 
+             name_tables=['test_table', 'test_tables_1', 'test_tables_2', 'test_tables_3']) as data:
+    
     @dag.task
     def create_tables(**context):
         # Create source table with data and target table without data

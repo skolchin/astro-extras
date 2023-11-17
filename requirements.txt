@@ -1,8 +1,7 @@
-apache-airflow[pandas,postgres]>=2.5.0
+apache-airflow[pandas,postgres]>=2.7.0
 astro-sdk-python[postgres]>=1.6.0
 openpyxl>=3.0.0
-airflow-provider-duckdb
-apache-airflow-providers-mysql
-apache-airflow-providers-microsoft-mssql
-apache-airflow-providers-snowflake
-apache-airflow-providers-sqlite
+# apache-airflow-providers-microsoft-mssql
+# airflow-provider-duckdb
+# apache-airflow-providers-snowflake
+# apache-airflow-providers-sqlite

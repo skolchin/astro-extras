@@ -72,7 +72,44 @@ was loaded or clean up after unsuccessfull attempts
 
 ### Table processing routines
 
-TBD
+There are some extra functions to help building ETL pipelines:
+
+- `load_table`
+- `save_table`
+- `transfer_table` \ `transfer_tables`.
+
+Function `load_table` is a wrapper over Astro-SDK's `run_raw_sql` function,
+which supports external SQL templates and always returns result as `pandas.DataFrame`.
+
+Here and below, SQL (or any) template is a file, which contains instructions and
+Jinja-macros substituted at runtime. For example, this template could be created
+in order to load data from `data_table` table within the limited date range:
+
+``` sql
+select * from data_table
+where some_date between '{{ ti.xcom_pull(key="session").period_start }}'::timestamp
+                and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
+```
+
+In order to be used, template file must be named after target object name
+and placed in a `templates\<dag_id>` folder under DAGS_ROOT. In given case, 
+assuming it will be used in `test-data-load` DAG,
+template file name must be `./dags/templates/data_table.sql`
+
+Function `save_table`, as it name says, saves data from `pandas.DataFrame` into
+some table in database. It wraps over `@dataframe` operator, but in addition
+in supports ETL sessions - if a session object is provided, its `session_id`
+will be inserted as 1st column of target table.
+
+Functions `transfer_table` and `transfer_tables` are used to move data
+from heterogenuos data sources as currently this functionality is missing from Astro-SDK.
+
+
+### Misc routines
+
+Functions `run_sql_template` and `run_sql_templates` find and execute
+one or multiple SQL templates (see above) over target database using 
+Astro-SDK `run_raw_sql` function.
 
 ## Installation
 

@@ -1,5 +1,16 @@
-FROM apache/airflow:slim-2.6.1-python3.10
+FROM apache/airflow:slim-2.7.1-python3.10
 COPY ./docker/requirements-docker.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
-COPY ./dist/astro_extras-0.0.1-py3-none-any.whl /tmp
-RUN pip install --no-cache-dir /tmp/*.whl
+RUN mkdir /tmp/astro_extras
+
+COPY ./setup.py /tmp/astro_extras/
+COPY ./MANIFEST.in /tmp/astro_extras/
+COPY ./pyproject.toml /tmp/astro_extras/
+COPY ./requirements.txt /tmp/astro_extras/
+COPY ./README.md /tmp/astro_extras/
+COPY ./src /tmp/astro_extras/src
+RUN pip install -e /tmp/astro_extras
+
+USER 0
+COPY ./docker/airflow.cfg /opt/airflow/airflow.cfg
+RUN chown -R $AIRFLOW_UID:root /opt/airflow/

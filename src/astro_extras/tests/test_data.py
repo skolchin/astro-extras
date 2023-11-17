@@ -10,11 +10,6 @@ from sqlalchemy import Boolean, Column, Float, MetaData, String, Integer
 
 from astro.databases.base import BaseDatabase
 from astro.databases.postgres import PostgresDatabase
-from astro.databases.duckdb import DuckdbDatabase
-from astro.databases.mysql import MysqlDatabase
-from astro.databases.mssql import MssqlDatabase
-from astro.databases.sqlite import SqliteDatabase
-from astro.databases.snowflake import SnowflakeDatabase
 
 class TestData:
     """Class for generating test data and creating tables in a database using astro and sqlalchemy."""
@@ -128,20 +123,8 @@ class TestData:
         Returns:
             BaseDatabase: An instance of a database connection class (e.g., PostgresDatabase).
         """
-        if self.db == 'postgres':
-            return PostgresDatabase(conn_id=conn_id)
-        elif self.db == 'duckdb':
-            return DuckdbDatabase(conn_id=conn_id)            
-        elif self.db == 'mysql':
-            return MysqlDatabase(conn_id=conn_id)
-        elif self.db == 'mssql':
-            return MssqlDatabase(conn_id=conn_id)
-        elif self.db == 'snowflake':
-            return SnowflakeDatabase(conn_id=conn_id)
-        elif self.db == 'sqlite':
-            return SqliteDatabase(conn_id=conn_id)
-        else:
-            raise ValueError(f"Unsupported database provider '{self.db}'")
+        assert self.db == 'postgres', 'Only Postgres is supported'
+        return PostgresDatabase(conn_id=conn_id)
 
     def generate_tables(self, num_cols: int, num_rows: int, num_tables: int = None, name_tables: List[str] = None) -> List[Table]:
         """

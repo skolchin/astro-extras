@@ -3,13 +3,17 @@
 
 """ Table unit tests """
 
+import pytest
 import sqlalchemy
 import pandas as pd
-
-from test_utils import run_dag, logger
+from confsupport import run_dag, logger
 from astro.sql.table import Table
-from astro_extras import declare_tables
 from sqlalchemy import MetaData, Table as sqlaTable, select, func, inspect
+
+try:
+    from astro_extras import declare_tables
+except ModuleNotFoundError:
+    declare_tables = None
 
 def compare_table_contents(source_table: sqlalchemy.Table, destination_table: sqlalchemy.Table) -> bool:
     """
@@ -99,8 +103,10 @@ def test_table_save_fail(docker_ip, docker_services, airflow_credentials):
     assert result == 'failed'
 
 def test_table_declare_tables():
+    if declare_tables is None:
+        pytest.skip('Astro-extras not installed')
+
     # Test function to declare tables using the given table names and source database name.
-    
     logger.info(f'Testing declare_tables function')
 
     # Declare tables.
@@ -131,11 +137,10 @@ def test_transfer_tables(docker_ip, docker_services, airflow_credentials, source
         lst_tables = ['test_table', 'test_tables_1', 'test_tables_2', 'test_tables_3']
         
         # Get metadata of tables in source and target databases.
-        meta_src = MetaData(bind=src_conn)
-        meta_tgt = MetaData(bind=tgt_conn)
-
         # Reflect on the metadata of source and target databases to get their table schema.
+        meta_src = MetaData(src_conn)
         meta_src.reflect()
+        meta_tgt = MetaData(tgt_conn)
         meta_tgt.reflect()
 
         # Check if required tables exist in source and target databases.

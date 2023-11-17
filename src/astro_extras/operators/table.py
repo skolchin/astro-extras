@@ -39,7 +39,7 @@ class TableTransfer(GenericTransfer):
         *,
         source_table: BaseTable,
         destination_table: BaseTable,
-        mode: Optional[Literal['default', 'dict', 'sync']] = 'default',
+        mode: Optional[Literal['default', 'dict', 'timed_dict']] = 'default',
         session: Optional[ETLSession] = None,
         **kwargs,
     ) -> None:
@@ -63,7 +63,7 @@ class TableTransfer(GenericTransfer):
         self.destination: BaseTable = destination_table
         # self.destination_table is set by super().__init__()
         self.destination_sql: str = dest_sql
-        self.mode: str = mode
+        self.mode: str = mode or 'default'
         self.session: ETLSession = session
 
     def _get_sql(self, table: Table, db: BaseDatabase, session: ETLSession = None, suffix: str = None) -> str:
@@ -120,6 +120,8 @@ class TableTransfer(GenericTransfer):
             case 'dict':
                 if not self._compare_datasets(stop_on_first_diff=True):
                     return super().execute(context)
+            case 'timed_dict':
+                pass
             case _:
                 raise AirflowFailException(f'Invalid or unsupported transfer mode: {self.mode}')
 
@@ -266,7 +268,19 @@ def transfer_table(
             If omitted, `source` argument value is used (this makes sense only
             with string table name and different connections).
 
-        mode: Reserved for furter use
+        mode: One of 'default', 'dict', 'timed_dict' (default is 'default').
+            Mode 'default' simply transfers all the data.
+            In 'dict' mode, data is transferred only if there are any differences
+            between source and target data. This could be used when the tables
+            represent some kind of dictionaries and theres no other way to find out
+            what have been changed. By convention, in order to obtain actual data
+            for target table, a view with '_a' suffix is used, which should filter out 
+            obsolete data (e.g.by latest session only).
+            In 'timed_dict' mode it is assumed that target table is a timed dictionary,
+            containing pair of 'effective_from' / 'effective_to' fields to denote
+            actual values for given key. During the transfer, records with values
+            changed on source are "closed" on target by setting 'effective_to' field
+            to current timestamp, and new records with changed attributes are added.
 
         source_conn_id: Source database Airflow connection.
             Used only with string source table name; for `Table` objects, `conn_id` field is used.

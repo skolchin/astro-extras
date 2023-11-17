@@ -4,7 +4,7 @@
 """ Templates unit tests """
 
 import pandas as pd
-from test_utils import run_dag, logger
+from confsupport import run_dag, logger
 
 def test_run_template_list(docker_ip, docker_services, airflow_credentials, source_db):
     logger.info(f'Testing template execution')

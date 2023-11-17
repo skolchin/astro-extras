@@ -1,6 +1,8 @@
 # Astro SDK Extras project
 # (c) kol, 2023
 
+__version__ = '0.0.1'
+
 from .operators.session import (
     open_session, 
     close_session,
@@ -39,7 +41,4 @@ from .utils.datetime_local import (
 )
 from .utils.data_compare import (
     compare_datasets
-)
-from .utils.test_data import (
-    TestData
 )

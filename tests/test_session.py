@@ -4,7 +4,7 @@
 """ ETL session unit tests """
 
 from dateutil.parser import isoparse
-from test_utils import run_dag, logger
+from confsupport import run_dag, logger
 from sqlalchemy import text
 
 def get_last_session(target_db):

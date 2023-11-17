@@ -28,7 +28,7 @@ x-airflow-common:
 
   volumes:
     - ./tests/dags:/opt/airflow/dags    # test: pointing to test dags directory
-    - ./.logs:/opt/airflow/logs
+    - ./logs:/opt/airflow/logs
 
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
