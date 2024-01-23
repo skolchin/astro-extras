@@ -10,8 +10,6 @@ from typing import Union, Iterable, Tuple
 from airflow.settings import TIMEZONE
 from airflow.exceptions import AirflowFailException
 
-_logger = logging.getLogger('airflow.task')
-
 def _split_row(vals, id_cols, shared_cols):
     """ Internal - split row by subsets """
     split_vals = {'x': {}, 'y': {}, '': {}}
@@ -33,6 +31,7 @@ def _split_row(vals, id_cols, shared_cols):
 def _adjust_timestamps(df: pd.DataFrame, exclude_cols: Iterable):
     """ Internal: adjust timestamps to common TZ """
 
+    _logger = logging.getLogger('airflow.task')
     tz_cols = [col for col in df.columns if df[col].dtype == 'datetime64[ns]' and
                 col not in exclude_cols]
     if tz_cols:
@@ -45,23 +44,44 @@ def _adjust_timestamps(df: pd.DataFrame, exclude_cols: Iterable):
 def _check_timestamp_types(df_a: pd.DataFrame, df_b: pd.DataFrame, exclude_cols: Iterable):
     """ Internal: check timestamp compatibility """
 
-    tz_a = [col for col in df_a.columns if 'datetime64[ns' in str(df_a[col].dtype) and
+    tz_a = [col for col in df_a.columns if 'datetime64[ns' in str(df_a.dtypes[col]) and
                 col not in exclude_cols]
-    tz_b = [col for col in df_b.columns if 'datetime64[ns' in str(df_b[col].dtype) and
+    tz_b = [col for col in df_b.columns if 'datetime64[ns' in str(df_b.dtypes[col]) and
                 col not in exclude_cols]
     for col in set(tz_a).intersection(tz_b):
-        if df_a[col].dtype == 'datetime64[ns]' and df_b[col].dtype != 'datetime64[ns]':
+        if df_a.dtypes[col] == 'datetime64[ns]' and df_b.dtypes[col] != 'datetime64[ns]':
             raise AirflowFailException(f'Incompatible timestamp column {col} type: ' \
-                                   f'{df_a[col].dtype} on source, {df_b[col].dtype} on target')
+                                   f'{df_a.dtypes[col]} on source, {df_b.dtypes[col]} on target')
 
 def compare_datasets(
     df_src: pd.DataFrame, 
     df_trg: pd.DataFrame, 
     id_cols: Iterable = None, 
     exclude_cols: Iterable = None, 
-    stop_on_first_diff: bool = True) -> Union[bool, Tuple[pd.DataFrame, pd.DataFrame]]:
+    stop_on_first_diff: bool = True) -> Union[bool, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
 
-    """ Compare datasets
+    """ Compare two dataframes by columns, their types and values.
+
+    Args:
+        df_src: Source dataframe
+
+        df_trg: Target dataframe
+
+        id_cols: List of columns treated as IDs.
+            If empty, 1st column is considered to be ID
+
+        exclude_cols: List of columns to be excluded from comparsion
+
+        stop_on_first_diff: if `True`, any difference would stop the comparsion,
+            otherwise it will continue and produce difference dataframes
+
+    Returns:
+        If `stop_on_first_diff == True`, would return boolean flag whether do
+        the dataframes the same (`True`) or not (`False`).
+
+        Otherwise, will return 3 dataframes, for new, changed and 
+        deleted records from target. Any of them could be `None` meaning
+        no corresponding diff detected.
     """
 
     orig_src_cols = list(df_src.columns)
@@ -69,6 +89,7 @@ def compare_datasets(
     trg_cols = df_trg.columns.str.lower()
     df_src.columns = src_cols
     df_trg.columns = trg_cols
+    _logger = logging.getLogger('airflow.task')
     _logger.debug(f'Source cols: {src_cols}')
     _logger.debug(f'Target cols: {trg_cols}')
 
@@ -125,7 +146,7 @@ def compare_datasets(
             d = {c: v for c, v in zip(df_merged.columns, row)}
             yield d.pop('__src_idx__'), d.pop('__trg_idx__'), d
 
-    idx_list = []
+    new_idx, upd_idx = [], []
     for src_idx, trg_idx, vals in _iter_tuples():
         src_vals, trg_vals = _split_row(vals, id_cols, shared_cols)
         key_val = [src_vals[c] for c in id_cols]
@@ -142,7 +163,7 @@ def compare_datasets(
                 return False
 
             _logger.debug(f'New record at {key_val}')
-            idx_list.append(src_idx)
+            new_idx.append(src_idx)
         else:
             diff_values = {k: {'source': src_vals[k], 'target': trg_vals[k]} for k in shared_cols \
                 if not (pd.isnull(src_vals[k]) and pd.isnull(trg_vals[k])) \
@@ -154,24 +175,84 @@ def compare_datasets(
                     return False
                 
                 _logger.debug(f'Diff at {id_cols}={key_val}: {diff_values}')
-                idx_list.append(src_idx)
+                upd_idx.append(src_idx)
 
     if stop_on_first_diff:
         _logger.info(f'No differences detected')
         return True
 
-    if not idx_list and (df_deleted is None or df_deleted.empty):
+    if not new_idx and not upd_idx and (df_deleted is None or df_deleted.empty):
         _logger.info(f'No differences detected')
-        return None, None
+        return None, None, None
 
-    if not idx_list:
-        df_merged = None
+    if not new_idx:
+        df_new = None
+        _logger.info(f'No new records on source')
     else:
-        df_merged = df_src.iloc[idx_list]
-        df_merged.index.name = None
-        df_merged.columns = orig_src_cols
+        df_new = df_src.iloc[new_idx]
+        df_new.index.name = None
+        df_new.columns = orig_src_cols
+        _logger.info(f'{df_new.shape[0]} new records on source')
 
-    _logger.info(f'{df_merged.shape[0] if df_merged is not None else 0} new or modified records on source')
+    if not upd_idx:
+        df_upd = None
+        _logger.info(f'No modified records on source')
+    else:
+        df_upd = df_src.iloc[upd_idx]
+        df_upd.index.name = None
+        df_upd.columns = orig_src_cols
+        _logger.info(f'{df_upd.shape[0]} modified records on source')
+
     _logger.info(f'{df_deleted.shape[0] if df_deleted is not None else 0} records deleted on target')
 
-    return df_merged, df_deleted
+    return df_new, df_upd, df_deleted
+
+
+def compare_timed_dict(df_src: pd.DataFrame, df_trg: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """ Compares two datasets as if they are timed dictionary data. Returns dataframes with records to open and to close """
+
+    # Check target table is really a timed dictionary
+    if not all([c in df_trg.columns for c in ['src_id', 'effective_from', 'effective_to']]):
+        raise AirflowFailException(f'Destination table must contain `src_id`, `effective_from` and `effective_to` columns')
+
+    # 1st column after `session_id` in a source table is considered to be ID
+    src_id_col = [c for c in df_src.columns if c != 'session_id'][0]
+    df_src.rename(columns={src_id_col: 'src_id'}, inplace=True)
+
+    # Get the deltas
+    df_new, df_upd, df_deleted = \
+        compare_datasets(df_src, df_trg,
+                            id_cols=['src_id'],
+                            exclude_cols=['effective_from', 'effective_to'],
+                            stop_on_first_diff=False)
+
+    # New records are only for opening new record
+    # Modified records are closed with opening new record
+    # Deleted records are closed without opening new record
+    effective_from = pd.Timestamp.now().floor('S')
+    effective_to = effective_from - pd.Timedelta(seconds=1)
+
+    df_closing = None
+    if df_upd is not None and df_deleted is not None:
+        df_closing = pd.concat([df_upd, df_deleted], ignore_index=True)
+    elif df_upd is None and df_deleted is not None:
+        df_closing = df_deleted
+    elif df_upd is not None and df_deleted is None:
+        df_closing = df_upd.copy()
+
+    if df_closing is not None:
+        df_closing['effective_to'] = effective_to
+
+    df_opening = None
+    if df_new is not None and df_upd is not None:
+        df_opening = pd.concat([df_new, df_upd], ignore_index=True)
+    elif df_new is None and df_upd is not None:
+        df_opening = df_upd.copy()
+    elif df_new is not None and df_upd is None:
+        df_opening = df_new
+
+    if df_opening is not None:
+        df_opening['effective_from'] = effective_from
+        df_opening['effective_to'] = None
+
+    return df_opening, df_closing

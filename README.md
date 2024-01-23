@@ -1,8 +1,6 @@
 # Astro SDK extras project
 
-Version 0.0.1 by [kol](skolchin@gmail.com)
-
-I've been using [Apache Airflow](https://airflow.apache.org/docs/apache-airflow/stable/)
+We've been using [Apache Airflow](https://airflow.apache.org/docs/apache-airflow/stable/)
 as ETL tool for quite some time. Recently I came across
 [Astronomer's Astro SDK](https://docs.astronomer.io/astro)
 which simplifies data processig with Airflow very much by providing
@@ -14,7 +12,9 @@ concept, automatic lineage and so on.
 The goal of this project is to add some usefull features to these great products, such as:
 
 * ETL session concept
+* SQL file-based templates support
 * Simplified table processing routines
+* Heterogenios data transfer
 * and more
 
 Please note that this project is in the very early stage of development
@@ -31,9 +31,18 @@ and completion state thus providing all necessary information about the data flo
 ETL session object defines its own data loading interval and allows
 to override automatic interval boundaries calculation using parameters when a DAG is started.
 
-ETL session instance is pushed to XCom and becomes available to all operators within
-the data pipeline. For example, this SQL query uses data interval defined in ETL session
-to limit input data range:
+Sessions are stored in a database in `sessions` table. Entries to that table are created
+when a new session is instantiated withing a DAG run and closed when DAG
+is finished.
+
+ETL session instance is pushed to XCom under `session` key 
+and becomes available to all operators within the data pipeline (see query example below).
+
+### SQL Templates
+
+SQL template is a file, which contains instructions and Jinja-macros substituted at runtime. 
+For example, this template could be created in order to load data from `data_table` table 
+within the limited date range:
 
 ``` sql
 select * from data_table
@@ -41,10 +50,82 @@ where some_date between '{{ ti.xcom_pull(key="session").period_start }}'::timest
                 and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
 ```
 
-All session management routines are compatible with Airflow's TaskFlow API
-providing seamless DAG structure definition using convinient functional programming style.
+In order to be used, template file must be named after target object name
+and placed in a `templates\<dag_id>` folder under DAGS_ROOT. In given case, 
+assuming it will be used in `test-data-load` DAG,
+template file name must be `./dags/templates/data_table.sql`.
 
-Usage examples:
+Note that it uses an `ETLSession` object from XCom to filter only actual data.
+
+### Heterogenuos data transfer
+
+Original Astro-SDK misses functionality to transfer data between different
+database systems (for example, from Oracle to PostgreSQL or vise versa).
+
+However, there is a [GenericTransfer](https://airflow.apache.org/docs/apache-airflow/stable/_api/airflow/operators/generic_transfer/index.html) 
+operator available in original Airflow code, so this package adopts it to 
+Astro-SDK style providing some easy-to-user `transfer_table` and `transfer_tables` functions. 
+They are highly customizable and fully support SQL templates.
+
+### Timed dictionaries support
+
+Timed dictionaries are special kind of tables used mostly in Data Warehousing.
+They are designed in such a way that they keep multiple values of the same
+attribute for given key, and have a timestamp on what attribute value was
+at particular time moment.
+
+For example, this is a time dictionary table (PostgreSQL notation is used):
+
+```sql
+create table dict_values(
+    record_id serial primary key,
+    effective_from timestamp not null,
+    effective_to timestamp,
+    src_id int not null,
+    some_value text not null
+);
+```
+Here, `src_id` is an ID of a record on a source, and `some_value` is
+time-dependent attribute of that ID. 
+And, `effective_from` / `effective_to` pair of columns denotes
+what period the particular value of `some_value` was assigned to
+particular `src_id` value.
+
+If we have this table filled like this:
+
+
+| record_id | effective_from | effective_to | src_id | some_value |
+| --------- | -------------- | ---------    | ------ | ---------- |
+| 1         | 2023-01-11 00:00:00 | null | 10 | Some value |
+
+
+and then `some_value` property of record with `id = 10` on source changes to `Some other value``, 
+then, after updating at 2023-11-02 00:01:00, this timed dictionary should look like this:
+
+| record_id | effective_from | effective_to | src_id | some_value |
+| --------- | -------------- | ---------    | ------ | ---------- |
+| 1         | 2023-11-01 00:00:01 | 2023-11-02 00:00:59 | 10 | Some value |
+| 2         | 2023-11-02 00:01:00 | null | 10 | Some other value |
+
+
+As you see, record with `record_id = 1` is now "closed", meaning that it
+has `effective_to` attribute set, and new record with `record_id = 2` was
+added and have `effective_to` set to null.
+
+Any query on this timed dictionarty should include `effective_from` / `effective_to`
+columns check, for example like this:
+
+```sql
+select src_id as id, some_value from dict_values
+where date_of_interest between effective_from and coalesce(effective_to, '2099-12-31')
+```
+
+where date_of_interest is some date when this query is running for.
+
+To update timed dictionaries, one should use `update_timed_table` / `update_timed_tables`
+functions.
+
+## Usage examples
 
 Create a DAG which opens a session, outputs session info to log and closes it:
 
@@ -56,60 +137,26 @@ with DAG(...) as dag, ETLSession('source', 'target') as session:
     print_session(session)
 ```
 
-Create a DAG with `open-session -> transfer-test_table -> close_session`
+Create a DAG with `open-session -> transfer-data_table -> close_session`
 task sequence:
 
 ``` python
 with DAG(...) as dag:
     session = open_session('source', 'target')
-    transfer_table('test_table', session=session)
+    transfer_table('data_table', session=session)
     close_session(session)
 ```
 
-Upon execution, this DAG will transfer data of `test_table` from source to target
+Upon execution, this DAG will transfer data of `data_table` from source to target
 database wrapping this in a session. This would help to easily identify when particular record
-was loaded or clean up after unsuccessfull attempts
+was loaded or clean up after unsuccessfull attempts.
 
-### Table processing routines
+The same, but using a context manager:
 
-There are some extra functions to help building ETL pipelines:
-
-- `load_table`
-- `save_table`
-- `transfer_table` \ `transfer_tables`.
-
-Function `load_table` is a wrapper over Astro-SDK's `run_raw_sql` function,
-which supports external SQL templates and always returns result as `pandas.DataFrame`.
-
-Here and below, SQL (or any) template is a file, which contains instructions and
-Jinja-macros substituted at runtime. For example, this template could be created
-in order to load data from `data_table` table within the limited date range:
-
-``` sql
-select * from data_table
-where some_date between '{{ ti.xcom_pull(key="session").period_start }}'::timestamp
-                and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
+``` python
+with DAG(...) as dag, ETLSession('source', 'target') as session:
+    transfer_table('test_table', session=session)
 ```
-
-In order to be used, template file must be named after target object name
-and placed in a `templates\<dag_id>` folder under DAGS_ROOT. In given case, 
-assuming it will be used in `test-data-load` DAG,
-template file name must be `./dags/templates/data_table.sql`
-
-Function `save_table`, as it name says, saves data from `pandas.DataFrame` into
-some table in database. It wraps over `@dataframe` operator, but in addition
-in supports ETL sessions - if a session object is provided, its `session_id`
-will be inserted as 1st column of target table.
-
-Functions `transfer_table` and `transfer_tables` are used to move data
-from heterogenuos data sources as currently this functionality is missing from Astro-SDK.
-
-
-### Misc routines
-
-Functions `run_sql_template` and `run_sql_templates` find and execute
-one or multiple SQL templates (see above) over target database using 
-Astro-SDK `run_raw_sql` function.
 
 ## Installation
 
@@ -117,7 +164,7 @@ To build a package from source, run Python build command and then install the pa
 
 ``` console
 python -m build .
-pip install ./dist/astro_extras-0.0.1-py3-none-any.whl
+pip install ./dist/astro_extras-xxxx-py3-none-any.whl
 ```
 
 Airflow could be used directly under Unix environment, but this is not possible in Windows.

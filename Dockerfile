@@ -12,5 +12,6 @@ COPY ./src /tmp/astro_extras/src
 RUN pip install -e /tmp/astro_extras
 
 USER 0
+RUN ln -sf /usr/share/zoneinfo/W-SU /etc/localtime
 COPY ./docker/airflow.cfg /opt/airflow/airflow.cfg
 RUN chown -R $AIRFLOW_UID:root /opt/airflow/

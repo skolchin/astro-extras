@@ -6,7 +6,7 @@
 import pendulum
 from airflow.models import DAG
 from astro.sql.table import Table, Metadata
-from astro_extras import transfer_table, ETLSession, run_sql_template
+from astro_extras import transfer_table, update_timed_table, ETLSession, run_sql_template
 
 # Forward table declaration
 source_types_table = Table('types', 'source_db', metadata=Metadata(schema='public'))
@@ -30,12 +30,12 @@ with DAG(
     # all primary keys and unique constraints in order to keep multiple
     # versions of every record.
     #
-    # TYPES table is transferred in `dict` mode that is data uploaded only if changed
+    # For TYPES table only changed records are transferred
     #
     # For TABLE_DATA, SQL template is used to select only relevant data 
     # (for demo purpose it simply selects all)
 
-    transfer_table(source_types_table, stage_types_table, mode='dict', session=session) >> \
+    transfer_table(source_types_table, stage_types_table, changes_only=True, session=session) >> \
     transfer_table(source_data_table, stage_data_table, session=session)
 
 with DAG(
@@ -45,12 +45,11 @@ with DAG(
     catchup=False,
     tags=['demo', 'pipeline'],
 ) as dag, ETLSession('target_db', 'target_db') as session:
-    """ DWH data processing DAG """
+    """ Stage-to-dwh data processing DAG """
 
-    # This will process data stored in STAGE and updates DWH data
-    run_sql_template('merge_dim_types', 'target_db',
-                     input_tables=[stage_types_table],
-                     affected_tables=[dwh_dim_types_table]) >> \
+    # Update TYPES timed dictionary
+    # Update DATA_FACT dwh table
+    update_timed_table(stage_types_table, dwh_dim_types_table, session=session) >> \
     run_sql_template('update_data_fact', 'target_db',
-                     input_tables=[stage_data_table],
+                     input_tables=[stage_data_table, dwh_dim_types_table],
                      affected_tables=[dwh_data_fact_table]) 

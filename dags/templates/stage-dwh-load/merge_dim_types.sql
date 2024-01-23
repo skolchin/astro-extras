@@ -2,6 +2,8 @@
 -- records those attribute values changed and 2nd is to insert
 -- records which didn't exist in dim before and to add ones which
 -- were closed on step 1 with new values
+--
+-- Not used anymore, replaced with Python's `transfer_table` operator
 
 --
 -- Step 1: close existing dict records

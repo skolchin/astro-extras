@@ -133,6 +133,13 @@ create table dwh.dim_types(
 );
 comment on table dwh.dim_types is 'Time-dependent types dictionary';
 
+create view dwh.dim_types_a as 
+    select * from dwh.dim_types
+    where effective_from <= current_timestamp and 
+          (effective_to is null or effective_to > current_timestamp);
+
+comment on view dwh.dim_types_a is 'Time-dependent types dictionary (actual data)';
+
 create table dwh.data_facts(
     fact_id serial not null primary key,
     fact_dttm timestamp not null default current_timestamp,

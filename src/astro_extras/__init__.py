@@ -1,7 +1,7 @@
 # Astro SDK Extras project
 # (c) kol, 2023
 
-__version__ = '0.0.1'
+__version__ = '0.0.2'
 
 from .operators.session import (
     open_session, 
@@ -12,11 +12,13 @@ from .operators.session import (
     ensure_session,
 )
 from .operators.table import (
-    transfer_table, 
     load_table,
     save_table,
     declare_tables,
+    transfer_table, 
     transfer_tables,
+    update_timed_table, 
+    update_timed_tables,
 )
 from .operators.direct import (
     run_sql_template,

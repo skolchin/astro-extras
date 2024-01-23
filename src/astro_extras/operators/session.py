@@ -27,14 +27,16 @@ from ..utils.datetime_local import datetime_to_tz
 @define(slots=False)
 class ETLSession:
     """ Session data object. Holds all ETL session attributes, can be pushed to XCom.
-    Implements context manager protocol (see examples).
+    Implements context manager protocol (see examples). 
+    
+    See `open_session` function for more information.
 
     Args:
         source_conn_id:   Source connection ID
         destination_conn_id:   Destination connection ID
         session_conn_id:   ID of connection, where `public.sessions` table is located.
             If not set, then `destination_conn_id` is used
-        session_id:   Actual session ID (automatically generated, do not set it)
+        session_id:   Actual session ID (automatically generated, do not set it manually)
         period_start: Date and time of session period start as ISO-format string.
             See `open_session` for details.
         period_end: Date and time of session period end as ISO-format string.
@@ -212,24 +214,28 @@ def open_session(
     `{"period": "[<period_start>, <period_end>]"}` parameter when DAG is started. 
     These fields can be used in data extraction queries to limit dataset like this:
 
-        select * from data_table 
-        where some_date 
-            between '{{ ti.xcom_pull(key="session").period_start }}'::timestamp
-            and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
+    ```sql
+    select * from data_table 
+    where some_date 
+        between '{{ ti.xcom_pull(key="session").period_start }}'::timestamp
+        and '{{ ti.xcom_pull(key="session").period_end }}'::timestamp
+    ```
 
     Technically, sessions are stored in a `public.sessions` table. Table DDL (for Postgres):
 
-        create table public.sessions(
-            session_id serial not null primary key,
-            source text not null,
-            target text not null,
-            period timestamptz[2] not null,
-            run_id text,
-            started timestamptz not null,
-            finished timestamptz,
-            status varchar(10) not null 
-                check (status in ('running', 'success', 'error'))
-        );
+    ```sql
+    create table public.sessions(
+        session_id serial not null primary key,
+        source text not null,
+        target text not null,
+        period timestamptz[2] not null,
+        run_id text,
+        started timestamptz not null,
+        finished timestamptz,
+        status varchar(10) not null 
+            check (status in ('running', 'success', 'error'))
+    );
+    ```
 
     Every table where the data is saved should have an extra `session_id` field 
     referencing the `sessions` table. For example:
