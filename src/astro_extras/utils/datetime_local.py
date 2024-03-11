@@ -3,8 +3,9 @@
 
 """ Timezone conversion routines """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from dateutil.tz import tzlocal, tzutc
+from dateutil.relativedelta import relativedelta
 
 def localnow() -> datetime:
     """ Return datetime.now() in a local timezone (TZ-aware) """
@@ -36,3 +37,11 @@ def datetime_to_naive(dt: datetime) -> datetime:
     if not dt:
         return None
     return dt.replace(tzinfo=None)
+
+def days_ago(n_days: int) -> datetime:
+    """ Returns TZ-aware date/time `n_days` days in the past from now """
+    return localnow() - timedelta(days=n_days)
+
+def months_ago(n_months: int) -> datetime:
+    """ Returns TZ-aware date/time `n_months` months in the past from now """
+    return localnow() - relativedelta(months=n_months)

@@ -39,7 +39,9 @@ from .utils.datetime_local import (
     datetime_to_local,
     datetime_to_utc,
     datetime_to_tz,
-    datetime_to_naive
+    datetime_to_naive,
+    days_ago,
+    months_ago
 )
 from .utils.data_compare import (
     compare_datasets

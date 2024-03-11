@@ -5,13 +5,14 @@
 
 import pytest
 import requests
+from datetime import timedelta
 from sqlalchemy import Column, Integer
 from astro.sql.table import Table, Metadata
 
 try:
-    from astro_extras import split_table_name, ensure_table
+    from astro_extras import split_table_name, ensure_table, localnow, days_ago
 except ModuleNotFoundError:
-    split_table_name = ensure_table = None
+    split_table_name = ensure_table = localnow = days_ago = None
 
 def test_split_table_name():
     if split_table_name is None:
@@ -123,3 +124,12 @@ def test_schedule_ops_parallel(docker_ip, docker_services, airflow_credentials):
     # Check that task op4 has no downstream tasks (i.e., it is the last task in the DAG)
     assert not op4['downstream_task_ids']
     
+def test_datetime():
+    if localnow is None:
+        return pytest.skip('Astro-extras was not installed')
+
+    dttm_now = localnow()
+    assert dttm_now.tzinfo is not None
+
+    dttm = days_ago(1)
+    assert (dttm_now - dttm + timedelta(seconds=1)).days == 1

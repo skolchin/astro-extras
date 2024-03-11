@@ -9,7 +9,7 @@ from airflow.models.dag import DagContext
 from airflow.configuration import conf
 from airflow.exceptions import AirflowFailException
 
-from typing import Optional
+from typing import Optional, Union
 
 def get_template_file(
         template: str, 
@@ -70,7 +70,8 @@ def get_template(
         template: str, 
         ext: Optional[str] = '.sql', 
         dag: Optional[DAG] = None,
-        fail_if_not_found: Optional[bool] = False) -> Optional[str]:
+        fail_if_not_found: Optional[bool] = False,
+        read_mode: Optional[str] = 'rt') -> Optional[Union[str, bytes]]:
     
     """ Returns template content. See `get_template_file` for details on templates.
 
@@ -79,9 +80,10 @@ def get_template(
         ext:    Template file extension, `.sql` by default
         dag:    Optional DAG context
         fail_if_not_found: If `True`, `AirflowFailException` will be raised if template does not exist
+        read_mode:   Read mode (`rt` for text, `rb` for binary, other will fail)
 
     Returns:
-        Template file content or `None` if no file was found and `fail_if_not_found = False`
+        Template file content or `None` if no file was found and `fail_if_not_found = False`.
 
     Examples:
         Load template from `./dags/templates/test_dag/mail.html`, manually render it
@@ -112,9 +114,10 @@ def get_template(
         >>>         html_content=get_template_file('mail', '.html'))
         
     """
+    assert read_mode in ('rt', 'rb'), f'Read_mode must be either `rt` or `rb`'
     template_file = get_template_file(template, ext, dag, fail_if_not_found)
     if not template_file:
         return None
     full_file_name = os.path.join(conf.get('core','dags_folder'), template_file)
-    with open(full_file_name, 'rt') as fp:
+    with open(full_file_name, read_mode) as fp:
         return fp.read()

@@ -321,11 +321,13 @@ def save_table(
 
 def declare_tables(
         table_names: Iterable[str],
-        conn_id: Optional[str] = None
+        conn_id: Optional[str] = None,
+        schema: Optional[str] = None,
+        database: Optional[str] = None,
 ) -> List[Table]:
     """ Convert list of string table names to list of `Table` objects """
 
-    return [ensure_table(t, conn_id) for t in table_names]
+    return [ensure_table(t, conn_id, schema, database) for t in table_names]
 
 def transfer_table(
         source: Union[str, Table],

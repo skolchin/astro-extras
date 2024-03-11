@@ -15,15 +15,20 @@ def split_table_name(table: str) -> Tuple[Optional[str], str]:
     parts = table.split('.', 1)
     return tuple(parts) if len(parts) > 1 else (None, parts[0])
 
-def ensure_table(table: Union[str, BaseTable], conn_id: Optional[str] = None) -> BaseTable:
+def ensure_table(
+        table: Union[str, BaseTable], 
+        conn_id: Optional[str] = None, 
+        schema: Optional[str] = None,
+        database: Optional[str] = None) -> BaseTable:
+    
     """ Ensure an object is a table """
     if table is None:
         return None
     if isinstance(table, BaseTable):
         return table
     if isinstance(table, str):
-        schema, table = split_table_name(table)
-        return Table(table, conn_id=conn_id, metadata=Metadata(schema=schema))
+        schema_from_name, table = split_table_name(table)
+        return Table(table, conn_id=conn_id, metadata=Metadata(schema=schema_from_name or schema, database=database))
     raise TypeError(f'Either str or BaseTable expected, {table.__class__.__name__} found')
 
 def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> List[BaseOperator]:
