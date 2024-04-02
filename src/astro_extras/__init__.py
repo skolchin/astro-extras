@@ -1,7 +1,7 @@
 # Astro SDK Extras project
-# (c) kol, 2023
+# (c) kol, 2023-2024
 
-__version__ = '0.0.2'
+__version__ = '0.0.5'
 
 from .operators.session import (
     open_session, 
@@ -23,6 +23,9 @@ from .operators.table import (
 from .operators.direct import (
     run_sql_template,
     run_sql_templates,
+)
+from .sensors.file import (
+    FileChangedSensor
 )
 from .utils.template import (
     get_template_file,

@@ -29,6 +29,7 @@ def ensure_table(
     if isinstance(table, str):
         schema_from_name, table = split_table_name(table)
         return Table(table, conn_id=conn_id, metadata=Metadata(schema=schema_from_name or schema, database=database))
+    
     raise TypeError(f'Either str or BaseTable expected, {table.__class__.__name__} found')
 
 def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> List[BaseOperator]:
