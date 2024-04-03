@@ -12,7 +12,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="astro_extras",
-    version="0.0.5",
+    version="0.0.6",
     author="Kol",
     author_email="skolchin@gmail.com",
     description="Additional Astro SDK operators",
@@ -26,7 +26,7 @@ setuptools.setup(
         "Framework :: Apache Airflow :: Provider",
     ],
     package_dir={"": "src"},
-    packages=['astro_extras', 'astro_extras.hooks', 'astro_extras.operators', 'astro_extras.utils'],
+    packages=['astro_extras', 'astro_extras.hooks', 'astro_extras.operators', 'astro_extras.sensors', 'astro_extras.utils'],
     python_requires=">=3.10",
     install_requires=requirements,
     setup_requires=['setuptools', 'wheel'],
