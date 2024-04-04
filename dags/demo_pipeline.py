@@ -9,8 +9,8 @@ from astro.sql.table import Table, Metadata
 from astro_extras import transfer_table, update_timed_table, ETLSession, run_sql_template
 
 # Forward table declaration
-source_types_table = Table('types', 'source_db', metadata=Metadata(schema='public'))
-source_data_table = Table('table_data', 'source_db', metadata=Metadata(schema='public'))
+source_types_table = Table('types', 'oracle_db')
+source_data_table = Table('table_data', 'oracle_db')
 stage_types_table = Table('types', 'target_db', metadata=Metadata(schema='stage'))
 stage_data_table = Table('table_data', 'target_db', metadata=Metadata(schema='stage'))
 dwh_dim_types_table = Table('dim_types', 'target_db', metadata=Metadata(schema='dwh'))

@@ -1,0 +1,4 @@
+apache-airflow-providers-oracle>=3.9.2
+astro-sdk-python[postgres]>=1.6.0
+cx-Oracle==8.3.0
+# openlineage-airflow

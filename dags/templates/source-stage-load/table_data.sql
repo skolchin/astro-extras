@@ -5,8 +5,8 @@ select
     comments,
     created_ts as created_ts,
     modified_ts as modified_ts
-from public.table_data 
-where created_ts between '{{ti.xcom_pull(key="session").period_start}}'::timestamp
-        and '{{ti.xcom_pull(key="session").period_end}}'::timestamp
-    or modified_ts between '{{ti.xcom_pull(key="session").period_start}}'::timestamp
-        and '{{ti.xcom_pull(key="session").period_end}}'::timestamp
+from table_data 
+where created_ts between TO_TIMESTAMP_TZ('{{ti.xcom_pull(key="session").period_start}}', 'YYYY-MM-DD"T"HH24:MI:SS TZH:TZM')
+        and TO_TIMESTAMP_TZ('{{ti.xcom_pull(key="session").period_end}}', 'YYYY-MM-DD"T"HH24:MI:SS TZH:TZM') 
+    or modified_ts between TO_TIMESTAMP_TZ('{{ti.xcom_pull(key="session").period_start}}', 'YYYY-MM-DD"T"HH24:MI:SS TZH:TZM')
+        and TO_DATE('{{ti.xcom_pull(key="session").period_end}}', 'YYYY-MM-DD"T"HH24:MI:SS TZH:TZM') 

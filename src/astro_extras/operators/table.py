@@ -75,7 +75,7 @@ class TableTransfer(GenericTransfer):
 
         full_name = db.get_table_qualified_name(table) + (suffix or '')
         if session:
-            return 'select {{ti.xcom_pull(key="session").session_id}} as session_id, * from ' + full_name
+            return 'select {{ti.xcom_pull(key="session").session_id}} as session_id, t.* from ' + full_name + ' t'
 
         return 'select * from ' + full_name
 

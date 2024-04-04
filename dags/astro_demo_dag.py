@@ -17,10 +17,10 @@ with DAG(
     tags=['demo', 'astro'],
 ) as dag:
 
-    input_table = Table('types', conn_id='source_db', metadata=Metadata(schema='public'))
-    output_table = Table('types_copy', conn_id='source_db', metadata=Metadata(schema='public'))
+    input_table = Table('types', conn_id='oracle_db')
+    output_table = Table('types_copy', conn_id='oracle_db')
 
-    @aql.run_raw_sql(handler=lambda result: result.fetchall(), results_format='pandas_dataframe')
+    @aql.run_raw_sql(results_format='pandas_dataframe')
     def load_table(table: Table):
         return '''select * from {{table}}'''
 

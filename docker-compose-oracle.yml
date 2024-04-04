@@ -1,0 +1,147 @@
+# Astro SDK Extras project
+# (c) kol, 2023
+#
+# Airflow & Astro SDK docker compose file
+# Based on: https://datatalks.club/blog/how-to-setup-lightweight-local-version-for-airflow.html
+#
+# To run, use:
+#   docker compose -p astro-extras build
+#   docker compose -p astro-extras up -d
+# or
+#   docker compose -p astro-extras up -d --build
+#
+x-airflow-common:
+  &airflow-common
+  env_file: .env
+  build:
+    context: .
+    dockerfile: ./Dockerfile.oracle
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres/airflow
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: ${AIRFLOW_TIMEZONE:-}
+    AIRFLOW__ASTRO_SDK__AUTO_ADD_INLETS_OUTLETS: 'true'
+    AIRFLOW__ASTRO_SDK__XCOM_STORAGE_CONN_ID: 'local'
+    AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES_REGEXP: 'airflow\..* astro\..* .*\.ETLSession'
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:latest
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      TZ: ${POSTGRES_TIMEZONE:-UTC}
+      PGTZ: ${POSTGRES_TIMEZONE:-UTC}
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+      - ./docker/setup_db.sql:/docker-entrypoint-initdb.d/10_setup_db.sql
+    ports:
+      - 5432:5432
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-airflow}"]
+      interval: 5s
+      retries: 5
+    restart: always
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - 8080:8080
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    # yamllint disable rule:line-length
+    command:
+      - -c
+      - |
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version
+    # yamllint enable rule:line-length
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+      _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    user: "0:0"
+    volumes:
+      - .:/sources
+
+  oracle-db:
+    image: gvenzl/oracle-free:latest
+    env_file: .env
+    environment:
+      ORACLE_PASSWORD: ${ORACLE_PASSWORD:-airflow}
+      APP_USER: ${ORACLE_USER:-airflow}
+      APP_USER_PASSWORD: ${ORACLE_PASSWORD:-airflow}
+    volumes:
+      - oracle-volume:/opt/oracle/oradata
+    ports:
+      - 1521:1521
+
+volumes:
+  postgres-db-volume:
+  oracle-volume:

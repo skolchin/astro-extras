@@ -8,3 +8,4 @@ __pycache__/
 logs/
 plugins/
 dist/
+oracle/instantclient-basic-linux.x64-21.13.0.0.0dbru.zip
