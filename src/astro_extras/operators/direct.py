@@ -22,8 +22,8 @@ _logger = logging.getLogger('airflow.task')
 def run_sql_template(
     template: str,
     conn_id: str,
-    input_tables: Optional[Iterable[Table]] = None,
-    affected_tables: Optional[Iterable[Table]] = None,
+    input_tables: Iterable[Table] | None = None,
+    affected_tables: Iterable[Table] | None = None,
     **kwargs
 ) -> XComArg:
     """ Runs an SQL script from template file.
@@ -73,8 +73,8 @@ def run_sql_template(
 def run_sql_templates(
     templates: Iterable[str],
     conn_id: str,
-    group_id: Optional[str] = None,
-    num_parallel: Optional[int] = 1,
+    group_id: str | None = None,
+    num_parallel: int = 1,
     **kwargs,
 ) -> TaskGroup:
     """ Runs SQL scripts from multiple template files wrapping them up

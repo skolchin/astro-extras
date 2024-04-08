@@ -43,7 +43,7 @@ with DAG(
     start_date=pendulum.today().add(days=-1),
     schedule=[stage_types_table, stage_data_table],
     catchup=False,
-    tags=['demo', 'pipeline'],
+    tags=['demo', 'astro-extras'],
 ) as dag, ETLSession('target_db', 'target_db') as session:
     """ Stage-to-dwh data processing DAG """
 

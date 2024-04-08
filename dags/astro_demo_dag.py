@@ -1,7 +1,7 @@
 # Astro SDK Extras project
 # (c) kol, 2023
 
-""" DAGs for Astro SDK caps demo """
+""" DAGs for Astro SDK capanilities demo """
 
 import pendulum
 import pandas as pd
@@ -31,3 +31,4 @@ with DAG(
 
     data = load_table(input_table)
     modify_data(data, output_table=output_table)
+

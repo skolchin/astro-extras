@@ -3,16 +3,17 @@
 
 """ Table operations """
 
-import pandas as pd
 import logging
+import pandas as pd
 from sqlalchemy import text
-from airflow.hooks.base import BaseHook
-from airflow.models.xcom_arg import XComArg
+
 from airflow.models.dag import DagContext
-from airflow.operators.generic_transfer import GenericTransfer
 from airflow.utils.context import Context
+from airflow.models.xcom_arg import XComArg
 from airflow.utils.task_group import TaskGroup
 from airflow.exceptions import AirflowFailException
+from airflow.providers.common.sql.hooks.sql import DbApiHook
+from airflow.operators.generic_transfer import GenericTransfer
 
 from astro import sql as aql
 from astro.databases import create_database
@@ -20,7 +21,7 @@ from astro.sql.table import BaseTable, Table
 from astro.databases.base import BaseDatabase
 from astro.airflow.datasets import kwargs_with_datasets
 
-from typing import Type, Union, Literal, Optional, Iterable, List
+from typing import Iterable, List
 
 from .session import ETLSession, ensure_session
 from ..utils.utils import ensure_table, schedule_ops, split_table_name
@@ -43,7 +44,7 @@ class TableTransfer(GenericTransfer):
         *,
         source_table: BaseTable,
         destination_table: BaseTable,
-        session: Optional[ETLSession] = None,
+        session: ETLSession | None = None,
         **kwargs,
     ) -> None:
 
@@ -66,7 +67,7 @@ class TableTransfer(GenericTransfer):
         self.session: ETLSession = session
         self._pre_execute_called = False
 
-    def _get_sql(self, table: Table, db: BaseDatabase, session: ETLSession = None, suffix: str = None) -> str:
+    def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
 
         if (sql_file := get_template_file(table.name, '.sql')):
@@ -84,6 +85,7 @@ class TableTransfer(GenericTransfer):
         if self._pre_execute_called:
             return
         
+        assert 'dag_run' in context
         if context['dag_run'].conf.get('debug'):
             self.log.setLevel(logging.DEBUG)
             logging.getLogger('airflow.task').setLevel(logging.DEBUG)
@@ -125,7 +127,7 @@ class ChangedTableTransfer(TableTransfer):
         *,
         source_table: BaseTable,
         destination_table: BaseTable,
-        session: Optional[ETLSession] = None,
+        session: ETLSession | None = None,
         **kwargs,
     ) -> None:
 
@@ -139,24 +141,40 @@ class ChangedTableTransfer(TableTransfer):
 
         self.destination_sql: str = dest_sql
 
-    def _compare_datasets(self, stop_on_first_diff: bool) -> bool:
+    def _compare_datasets(self, stop_on_first_diff: bool, logger: logging.Logger | None = None) -> bool:
         """ Internal - compare source and target dictionaries """
 
-        src = BaseHook.get_hook(self.source_conn_id)
-        dest = BaseHook.get_hook(self.destination_conn_id)
+        logger = logger or self.log
 
-        self.log.info(f'Executing: {self.sql}')
+        src = DbApiHook.get_hook(self.source_conn_id)
+        dest = DbApiHook.get_hook(self.destination_conn_id)
+
+        logger.info(f'Executing: {self.sql}')
         df_src = src.get_pandas_df(self.sql)
-        self.log.info(f'Executing: {self.destination_sql}')
+        logger.info(f'Executing: {self.destination_sql}')
         df_trg = dest.get_pandas_df(self.destination_sql)
 
-        return compare_datasets(df_src, df_trg, stop_on_first_diff=stop_on_first_diff)
+        return compare_datasets(df_src, df_trg, stop_on_first_diff=stop_on_first_diff, logger=logger)
 
     def execute(self, context: Context):
         """ Execute operator """
         self._pre_execute(context)
         if not self._compare_datasets(stop_on_first_diff=True):
             return super().execute(context)
+
+class CompareTableOperator(ChangedTableTransfer):
+    """
+    Table comparsion operator to be used within `compare_table` function.
+    Compares source and target data and prints results to log.
+    """
+    ui_color = "#64bf62"
+
+    def execute(self, context: Context):
+        """ Execute operator """
+        logger = logging.getLogger(f'compare_tables_logger')
+        logger.setLevel(logging.DEBUG)
+        if not self._compare_datasets(stop_on_first_diff=True, logger=logger):
+            raise AirflowFailException(f'Differences detected')
 
 class TimedTableTransfer(TableTransfer):
     """
@@ -174,7 +192,7 @@ class TimedTableTransfer(TableTransfer):
         *,
         source_table: BaseTable,
         destination_table: BaseTable,
-        session: Optional[ETLSession] = None,
+        session: ETLSession | None = None,
         **kwargs,
     ) -> None:
 
@@ -198,8 +216,8 @@ class TimedTableTransfer(TableTransfer):
         self._pre_execute(context)
 
         # Get source and target data
-        src = BaseHook.get_hook(self.source_conn_id)
-        dest = BaseHook.get_hook(self.destination_conn_id)
+        src = DbApiHook.get_hook(self.source_conn_id)
+        dest = DbApiHook.get_hook(self.destination_conn_id)
 
         self.log.info(f'Executing: {self.sql}')
         df_src = src.get_pandas_df(self.sql)
@@ -226,10 +244,10 @@ class TimedTableTransfer(TableTransfer):
                 df_opening.to_sql(dest_table, conn, schema=dest_schema, index=False, if_exists='append')
 
 def load_table(
-        table: Union[str, BaseTable],
-        conn_id: Optional[str] = None,
-        session: Optional[ETLSession] = None,
-        sql: Optional[str] = None) -> XComArg:
+        table: str | BaseTable,
+        conn_id: str | None = None,
+        session: ETLSession | None = None,
+        sql: str | None = None) -> XComArg:
     """ Loads table into memory.
 
     This is a wrapper over Astro-SDK `run_raw_sql` to
@@ -277,7 +295,7 @@ def load_table(
                         conn_id=conn_id,
                         task_id=f'load-{table}',
                         results_format='pandas_dataframe')
-        def _load_table_by_name(table: str, session: ETLSession):
+        def _load_table_by_name(table: str, session: ETLSession | None):
             sql_file = get_template_file(table, '.sql', dag=dag)
             return sql or sql_file or f'select * from {table}'
 
@@ -288,7 +306,7 @@ def load_table(
                         conn_id=conn_id,
                         task_id=f'load-{table.name}',
                         results_format='pandas_dataframe')
-        def _load_table(table: Table, session: ETLSession):
+        def _load_table(table: BaseTable, session: ETLSession | None):
             sql_file = get_template_file(table.name, '.sql', dag=dag)
             return sql or sql_file or '''select * from {{table}}'''
 
@@ -296,10 +314,10 @@ def load_table(
 
 def save_table(
         data: XComArg,
-        table: Union[str, BaseTable],
-        conn_id: Optional[str] = None,
-        session: Optional[ETLSession] = None,
-        fail_if_not_exist: Optional[bool] = True) -> XComArg:
+        table: str | BaseTable,
+        conn_id: str | None = None,
+        session: ETLSession | None = None,
+        fail_if_not_exist: bool | None = True) -> XComArg:
     """ Saves a table into database """
 
     table = ensure_table(table, conn_id)
@@ -321,21 +339,21 @@ def save_table(
 
 def declare_tables(
         table_names: Iterable[str],
-        conn_id: Optional[str] = None,
-        schema: Optional[str] = None,
-        database: Optional[str] = None,
-) -> List[Table]:
+        conn_id: str | None = None,
+        schema: str | None = None,
+        database: str | None = None,
+) -> List[BaseTable]:
     """ Convert list of string table names to list of `Table` objects """
 
     return [ensure_table(t, conn_id, schema, database) for t in table_names]
 
 def transfer_table(
-        source: Union[str, Table],
-        target: Union[str, Table, None] = None,
-        source_conn_id: Optional[str] = None,
-        destination_conn_id: Optional[str] = None,
-        session: Union[XComArg, ETLSession, None] = None,
-        changes_only: Optional[bool] = False,
+        source: str | BaseTable,
+        target: str | BaseTable | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        session: XComArg | ETLSession | None = None,
+        changes_only: bool | None = False,
         **kwargs) -> XComArg:
     
     """ Cross-database data transfer.
@@ -394,7 +412,7 @@ def transfer_table(
             a `session_id` field will be automatically added to selection.
 
         changes_only:   If set to `True`, the operator will compare source and target
-            tables and transfer data only when they are different. Target data ara obtained
+            tables and transfer data only when they are different. Target data are obtained
             by runnning `destination_sql`. By default, this query will be built using 
             `<destination_table>_a` view to get actual data.
 
@@ -421,7 +439,7 @@ def transfer_table(
     """
 
     source_table = ensure_table(source, source_conn_id)
-    dest_table = ensure_table(target, destination_conn_id) or source_table
+    dest_table = ensure_table(target or source_table, destination_conn_id)
     op_cls = TableTransfer if not changes_only else ChangedTableTransfer
     op = op_cls(
         source_table=source_table,
@@ -434,20 +452,20 @@ def transfer_table(
     return XComArg(op)
 
 def transfer_tables(
-        source_tables: List[Union[str, Table]],
-        target_tables: Optional[List[Union[str, Table]]] = None,
-        source_conn_id: Optional[str] = None,
-        destination_conn_id: Optional[str] = None,
-        group_id: Optional[str] = None,
-        num_parallel: Optional[int] = 1,
-        session: Union[XComArg, ETLSession, None] = None,
-        changes_only: Optional[bool] = False,
+        source_tables: List[str | Table],
+        target_tables: List[str | Table] | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        session: XComArg | ETLSession | None = None,
+        changes_only: bool | None = False,
         **kwargs) -> TaskGroup:
 
     """ Transfer multiple tables.
 
     Creates an Airflow task group consisting of `TableTransfer` operators 
-    for each table pair from `source_tables` and `target_tables` list.
+    for each table pair from `source_tables` and `target_tables` lists.
 
     See `transfer_table` for more information.
     """
@@ -475,12 +493,44 @@ def transfer_tables(
         schedule_ops(ops_list, num_parallel)
     return tg
 
+def compare_tables(
+        source_tables: List[str | Table],
+        target_tables: List[str | Table] | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        **kwargs) -> TaskGroup:
+
+    """ Compares multiple tables.
+
+    Creates an Airflow task group consisting of `CompareTableTransfer` operators 
+    for each table pair from `source_tables` and `target_tables` lists.
+    Each operator will compare source and target table and fails if any differences
+    are detected among them.
+    """
+    if not target_tables or len(target_tables) != len(source_tables):
+        raise AirflowFailException(f'Source and target tables list size must be equal')
+
+    with TaskGroup(group_id or 'compare-tables', add_suffix_on_collision=True) as tg:
+        ops_list = []
+        for (source, target) in zip(source_tables, target_tables):
+            source_table = ensure_table(source, source_conn_id)
+            dest_table = ensure_table(target, destination_conn_id) or source_table
+            op = CompareTableOperator(
+                source_table=source_table, 
+                destination_table=dest_table, 
+                task_id=f'compare-{source_table.name}')
+            ops_list.append(op)
+        schedule_ops(ops_list, num_parallel)
+    return tg
+
 def update_timed_table(
-        source: Union[str, Table],
-        target: Union[str, Table, None] = None,
-        source_conn_id: Optional[str] = None,
-        destination_conn_id: Optional[str] = None,
-        session: Union[XComArg, ETLSession, None] = None,
+        source: str | BaseTable,
+        target: str | BaseTable | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        session: XComArg | ETLSession | None = None,
         **kwargs) -> XComArg:
     
     """ Updates timed dictionary table """
@@ -498,13 +548,13 @@ def update_timed_table(
     return XComArg(op)
 
 def update_timed_tables(
-        source_tables: List[Union[str, Table]],
-        target_tables: Optional[List[Union[str, Table]]] = None,
-        source_conn_id: Optional[str] = None,
-        destination_conn_id: Optional[str] = None,
-        group_id: Optional[str] = None,
-        num_parallel: Optional[int] = 1,
-        session: Union[XComArg, ETLSession, None] = None,
+        source_tables: List[str | Table],
+        target_tables: List[str | Table] | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        session: XComArg | ETLSession | None = None,
         **kwargs) -> TaskGroup:
 
     """ Updates multiple timed dictionary tables """

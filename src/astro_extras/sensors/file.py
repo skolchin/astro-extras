@@ -94,10 +94,13 @@ class FileChangedSensor(FileSensor):
     Extension of standard ``FileSensor`` which waits for a file to appear on a filesystem,
     and to be modified since last check.
 
-    :param fs_conn_id: reference to the File (path) connection id
-    :param filepath: file name to look after (wildcards/directories not allowed)
-    :param deferrable: triggers Airflow task deferral mode
-    :return    2-element tuple with file name and file modification time as isoformatted datetime
+    Args:
+        fs_conn_id: reference to the File (path) connection id
+        filepath: file name to look after (wildcards/directories not allowed)
+        deferrable: triggers Airflow task deferral mode
+
+    Returns:
+        2-element tuple with file name and file modification time as isoformatted string
     """
 
     def __init__(

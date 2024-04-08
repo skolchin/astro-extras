@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pandas as pd
 import sqlalchemy
-from airflow.exceptions import AirflowException
+from oracledb import OperationalError, init_oracle_client
+from airflow.configuration import conf
 from airflow.providers.oracle.hooks.oracle import OracleHook
-from oracledb import OperationalError
-
+from astro.settings import SECTION_KEY
 from astro.constants import DEFAULT_CHUNK_SIZE, LoadExistStrategy, MergeConflictStrategy
 from astro.databases.base import BaseDatabase
 from astro.options import LoadOptions
@@ -16,21 +16,20 @@ DEFAULT_CONN_ID = OracleHook.default_conn_name
 
 
 class OracleDatabase(BaseDatabase):
-    _create_schema_statement: str = (
-        "CREATE SCHEMA IF NOT EXISTS {} "
-        "DEFAULT CHARACTER SET = 'utf8' DEFAULT COLLATE = "
-        "'utf8_unicode_ci'"
-    )
-
     def __init__(
         self,
         conn_id: str = DEFAULT_CONN_ID,
         table: BaseTable | None = None,
         load_options: LoadOptions | None = None, 
+        thick_client: bool = conf.getboolean(SECTION_KEY, "thick_oracle_client", fallback=False),
+
     ):
         super().__init__(conn_id)
         self.table = table
         self.load_options = load_options
+        self.thick_client = thick_client
+        if self.thick_client:
+            init_oracle_client()
 
     @cached_property
     def hook(self) -> OracleHook:
@@ -109,13 +108,13 @@ class OracleDatabase(BaseDatabase):
         """
         Checks if a schema exists in the database
 
-        :param schema: DB Schema - a namespace that contains named objects like (tables, functions, etc)
+        :param schema: A schema, which is equivalent for username in Oracle
         """
         try:
             schema_result = self.hook.run(
-                "SELECT schema_name FROM information_schema.schemata WHERE "
-                "lower(schema_name) = lower(%(schema_name)s);",
-                parameters={"schema_name": schema.lower()},
+                "SELECT username FROM dba_users WHERE "
+                "UPPER(username) = UPPER(%(schema_name)s);",
+                parameters={"schema_name": schema},
                 handler=lambda x: [y[0] for y in x.fetchall()],
             )
             return len(schema_result) > 0
@@ -154,11 +153,11 @@ class OracleDatabase(BaseDatabase):
         :param if_conflicts: The strategy to be applied if there are conflicts.
         """
         statement = (
-            "insert into {target_table}"
+            "INSERT INTO {target_table}"
             "({target_columns})  "
-            "select {source_columns} "
-            "from {source_table}  "
-            "on duplicate key update {merge_vals};"
+            "SELECT {source_columns} "
+            "FROM {source_table}  "
+            "ON DUPLICATE KEY UPDATE {merge_vals};"
         )
 
         source_column_names = list(source_to_target_columns_map.keys())

@@ -31,11 +31,11 @@ def _split_row(vals, id_cols, shared_cols):
 def _adjust_timestamps(df: pd.DataFrame, exclude_cols: Iterable):
     """ Internal: adjust timestamps to common TZ """
 
-    _logger = logging.getLogger('airflow.task')
+    logger = logging.getLogger('airflow.task')
     tz_cols = [col for col in df.columns if df[col].dtype == 'datetime64[ns]' and
                 col not in exclude_cols]
     if tz_cols:
-        _logger.debug(f'Converting TZ-unaware timestamp columns {tz_cols} to timezone {TIMEZONE.name}')
+        logger.debug(f'Converting TZ-unaware timestamp columns {tz_cols} to timezone {TIMEZONE.name}')
         for col in tz_cols:
             df[col] = df[col].map(lambda t: t.tz_localize(TIMEZONE.name))
 
@@ -58,7 +58,8 @@ def compare_datasets(
     df_trg: pd.DataFrame, 
     id_cols: Iterable = None, 
     exclude_cols: Iterable = None, 
-    stop_on_first_diff: bool = True) -> Union[bool, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
+    stop_on_first_diff: bool = True,
+    logger: logging.Logger = None) -> Union[bool, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
 
     """ Compare two dataframes by columns, their types and values.
 
@@ -75,30 +76,34 @@ def compare_datasets(
         stop_on_first_diff: if `True`, any difference would stop the comparsion,
             otherwise it will continue and produce difference dataframes
 
-    Returns:
-        If `stop_on_first_diff == True`, would return boolean flag whether do
-        the dataframes the same (`True`) or not (`False`).
+        logger: logger object (if `None`, `airflow.task` logger will be used)
 
-        Otherwise, will return 3 dataframes, for new, changed and 
-        deleted records from target. Any of them could be `None` meaning
-        no corresponding diff detected.
+    Returns:
+        If `stop_on_first_diff == True`, would return boolean flag whether
+        the dataframes are the same (`True`) or not (`False`).
+
+        Otherwise, will return 3 dataframes for new, changed and 
+        deleted records. Any of them could be `None` meaning
+        no corresponding difference detected.
     """
+
+    logger = logger or logging.getLogger('airflow.task')
 
     orig_src_cols = list(df_src.columns)
     src_cols = df_src.columns.str.lower()
     trg_cols = df_trg.columns.str.lower()
     df_src.columns = src_cols
     df_trg.columns = trg_cols
-    _logger = logging.getLogger('airflow.task')
-    _logger.debug(f'Source cols: {src_cols}')
-    _logger.debug(f'Target cols: {trg_cols}')
+
+    logger.debug(f'Source cols: {src_cols}')
+    logger.debug(f'Target cols: {trg_cols}')
 
     if not exclude_cols:
         exclude_cols = []
     else:
         exclude_cols = [c.lower() for c in exclude_cols]
     exclude_cols.extend(['session_id', '_created', '_modified', '_deleted'])
-    _logger.debug(f'Excluded columns: {exclude_cols}')
+    logger.debug(f'Excluded columns: {exclude_cols}')
 
     if not id_cols:
         id_cols = [c for c in src_cols if c not in exclude_cols][:1]
@@ -110,22 +115,22 @@ def compare_datasets(
         diff_cols = set(id_cols).difference(trg_cols)
         if diff_cols:
             raise AirflowFailException(f'ID columns missing from target dataset: {diff_cols}')
-    _logger.debug(f'ID columns: {id_cols}')
+    logger.debug(f'ID columns: {id_cols}')
 
     diff_cols = set(src_cols).symmetric_difference(trg_cols).difference(exclude_cols)
     if diff_cols:
-        _logger.warning(f'Diff in columns detected: {diff_cols}.\n' + 
+        logger.warning(f'Diff in columns detected: {diff_cols}.\n' + 
                        'Operation will continue, but may result in incomplete data transfer or errors.\n' +
                        'Review the datasets and correct structure to avoid that.')
 
     if df_src.shape[0] != df_trg.shape[0] and stop_on_first_diff:
-        _logger.info('Number of records in source and target dataset is different')
+        logger.info('Number of records in source and target datasets is different')
         return False
 
     _check_timestamp_types(df_src, df_trg, exclude_cols)
 
     shared_cols = set(src_cols).intersection(trg_cols).difference(exclude_cols)
-    _logger.debug(f'Shared cols: {shared_cols}')
+    logger.debug(f'Shared cols: {shared_cols}')
 
     df_src.index.name = '__src_idx__'
     df_trg.index.name = '__trg_idx__'
@@ -133,7 +138,7 @@ def compare_datasets(
     df_merged = pd.merge(df_src.reset_index(), df_trg.reset_index(), how='outer', on=id_cols,
                             copy=False, indicator=True, sort=False)
     if df_merged['_merge'].eq('right_only').any():
-        _logger.info('Target dataset contains records not present on the source')
+        logger.info('Target dataset contains records not present on the source')
         if stop_on_first_diff:
             return False
 
@@ -151,18 +156,18 @@ def compare_datasets(
         src_vals, trg_vals = _split_row(vals, id_cols, shared_cols)
         key_val = [src_vals[c] for c in id_cols]
 
-        _logger.debug(f'Src {src_idx}: {src_vals}')
-        _logger.debug(f'Trg {trg_idx}: {trg_vals}')
+        logger.debug(f'Src {src_idx}: {src_vals}')
+        logger.debug(f'Trg {trg_idx}: {trg_vals}')
 
         if not pd.isnull(vals.get('_deleted')) or vals.get('_merge') == 'right_only':
-            _logger.debug('Deleted record, skipping')
+            logger.debug('Deleted record, skipping')
             continue
         if pd.isnull(trg_idx):
             if stop_on_first_diff:
-                _logger.info(f'New record at {key_val}')
+                logger.info(f'New record at {key_val}')
                 return False
 
-            _logger.debug(f'New record at {key_val}')
+            logger.debug(f'New record at {key_val}')
             new_idx.append(src_idx)
         else:
             diff_values = {k: {'source': src_vals[k], 'target': trg_vals[k]} for k in shared_cols \
@@ -171,39 +176,39 @@ def compare_datasets(
             if diff_values:
                 key_val = [src_vals[c] for c in id_cols]
                 if stop_on_first_diff:
-                    _logger.info(f'Diff at {id_cols}={key_val}: {diff_values}')
+                    logger.info(f'Diff at {id_cols}={key_val}: {diff_values}')
                     return False
                 
-                _logger.debug(f'Diff at {id_cols}={key_val}: {diff_values}')
+                logger.debug(f'Diff at {id_cols}={key_val}: {diff_values}')
                 upd_idx.append(src_idx)
 
     if stop_on_first_diff:
-        _logger.info(f'No differences detected')
+        logger.info(f'No differences detected')
         return True
 
     if not new_idx and not upd_idx and (df_deleted is None or df_deleted.empty):
-        _logger.info(f'No differences detected')
+        logger.info(f'No differences detected')
         return None, None, None
 
     if not new_idx:
         df_new = None
-        _logger.info(f'No new records on source')
+        logger.info(f'No new records on source')
     else:
         df_new = df_src.iloc[new_idx]
         df_new.index.name = None
         df_new.columns = orig_src_cols
-        _logger.info(f'{df_new.shape[0]} new records on source')
+        logger.info(f'{df_new.shape[0]} new records on source')
 
     if not upd_idx:
         df_upd = None
-        _logger.info(f'No modified records on source')
+        logger.info(f'No modified records on source')
     else:
         df_upd = df_src.iloc[upd_idx]
         df_upd.index.name = None
         df_upd.columns = orig_src_cols
-        _logger.info(f'{df_upd.shape[0]} modified records on source')
+        logger.info(f'{df_upd.shape[0]} modified records on source')
 
-    _logger.info(f'{df_deleted.shape[0] if df_deleted is not None else 0} records deleted on target')
+    logger.info(f'{df_deleted.shape[0] if df_deleted is not None else 0} records deleted on target')
 
     return df_new, df_upd, df_deleted
 

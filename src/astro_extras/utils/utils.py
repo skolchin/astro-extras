@@ -24,13 +24,14 @@ def ensure_table(
     """ Ensure an object is a table """
     if table is None:
         return None
+    
     if isinstance(table, BaseTable):
         return table
-    if isinstance(table, str):
+    elif isinstance(table, str):
         schema_from_name, table = split_table_name(table)
         return Table(table, conn_id=conn_id, metadata=Metadata(schema=schema_from_name or schema, database=database))
-    
-    raise TypeError(f'Either str or BaseTable expected, {table.__class__.__name__} found')
+    else:
+        raise TypeError(f'Either str or BaseTable expected, {table.__class__.__name__} found')
 
 def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> List[BaseOperator]:
     """ Build parallel operator chains. Returns list of last operators in each chain. """
@@ -39,6 +40,9 @@ def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> List[Ba
         raise ValueError('Empty list')
     if len(ops_list) == 1:
         return ops_list[0]
+    
+    if len(ops_list) == -1:
+        return ops_list
     
     if num_parallel <= 1 or len(ops_list) <= num_parallel:
         _ = [a.set_downstream(b) for a, b in pairwise(ops_list)]
