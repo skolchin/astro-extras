@@ -103,7 +103,11 @@ class ETLSession:
         if len(dag.tasks) > 1:
             t1, t2 = dag.tasks[0], dag.tasks[1]
             if t1.task_id == 'open-session' and 'open-session' not in t2.upstream_task_ids:
-                t2.set_upstream(t1)
+                if t2.task_group is None or t2.task_group.is_root:
+                    t2.set_upstream(t1)
+                else:
+                    t2.task_group.set_upstream(t1)
+
         close_session(self._actual_sesssion).set_downstream(aql.cleanup())
 
 class OpenSessionOperator(BaseOperator):
@@ -297,7 +301,7 @@ def open_session(
 
 def close_session(
         session: Union[ETLSession, XComArg], 
-        upstream_task: Optional[Any] = None,
+        upstream: Optional[Any] = None,
         dag: Optional[DAG] = None,
         **kwargs) -> XComArg:
     """ Closes the ETL session.
@@ -327,13 +331,15 @@ def close_session(
     """
     
     assert (dag := dag or DagContext.get_current_dag())
-    if upstream_task is None:
+    if not upstream:
         if not len(dag.tasks):
             raise ValueError('close_session must not be the first DAG operator')
-        upstream_task = dag.tasks[-1]
+        upstream = dag.tasks[-1]
+        if upstream.task_group and not upstream.task_group.is_root:
+            upstream = upstream.task_group
 
     op = CloseSessionOperator(dag=dag, session=session, **kwargs)
-    upstream_task.set_downstream(op)
+    op.set_upstream(upstream)
     return XComArg(op)
 
 def get_current_session(context: Optional[Context] = None) -> ETLSession:

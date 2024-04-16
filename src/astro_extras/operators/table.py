@@ -476,7 +476,11 @@ def transfer_tables(
     target_tables = target_tables or source_tables
     op_cls = TableTransfer if not changes_only else ChangedTableTransfer
 
-    with TaskGroup(group_id or 'transfer-tables', add_suffix_on_collision=True) as tg:
+    with TaskGroup(
+        group_id or 'transfer-tables', 
+        add_suffix_on_collision=True,
+        prefix_group_id=False) as tg:
+
         ops_list = []
         for (source, target) in zip(source_tables, target_tables):
             source_table = ensure_table(source, source_conn_id)
@@ -490,7 +494,9 @@ def transfer_tables(
                     input_datasets=source_table, 
                     output_datasets=dest_table))
             ops_list.append(op)
+
         schedule_ops(ops_list, num_parallel)
+
     return tg
 
 def compare_tables(

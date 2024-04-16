@@ -1,5 +1,5 @@
 # Astro SDK Extras project
-# (c) kol, 2023
+# (c) kol, 2023-2024
 """
 Setup routine for astro_extras package
 """
@@ -12,7 +12,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="astro_extras",
-    version="0.0.8",
+    version="0.0.11",
     author="Kol",
     author_email="skolchin@gmail.com",
     description="Additional Astro SDK operators",

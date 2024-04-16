@@ -6,7 +6,7 @@
 from itertools import pairwise, groupby
 from airflow.models import BaseOperator
 from astro.sql.table import BaseTable, Table, Metadata
-from typing import Union, Tuple, Optional, List
+from typing import Union, Tuple, Optional, List, Iterable
 
 def split_table_name(table: str) -> Tuple[Optional[str], str]:
     """ Splits table name to schema and table name """
@@ -33,6 +33,21 @@ def ensure_table(
     else:
         raise TypeError(f'Either str or BaseTable expected, {table.__class__.__name__} found')
 
+def split_iterable(it: Iterable, num_splits: int = 1) -> Iterable:
+    splits = [None] * num_splits
+    op_iter = iter(it)
+    try:
+        while True:
+            for n_split in range(num_splits):
+                op = next(op_iter)
+                if splits[n_split] is None:
+                    splits[n_split] = [op]
+                else:
+                    splits[n_split].append(op)
+    except StopIteration:
+        pass
+    return splits
+
 def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> List[BaseOperator]:
     """ Build parallel operator chains. Returns list of last operators in each chain. """
 
@@ -41,15 +56,9 @@ def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> List[Ba
     if len(ops_list) == 1:
         return ops_list[0]
     
-    if len(ops_list) == -1:
-        return ops_list
-    
-    if num_parallel <= 1 or len(ops_list) <= num_parallel:
-        _ = [a.set_downstream(b) for a, b in pairwise(ops_list)]
-        return [ops_list[-1]]
-
-    splits = list({k: [y[1] for y in g] \
-        for k, g in groupby(enumerate(ops_list), lambda v: v[0] // (len(ops_list) // num_parallel))}.values())
-    _ = [a.set_downstream(b) for g in splits for a, b in pairwise(g)]
+    splits = split_iterable(ops_list, num_parallel)
+    for g in splits: 
+        for a, b in pairwise(g):
+            a.set_downstream(b)
 
     return [x[-1] for x in splits]
