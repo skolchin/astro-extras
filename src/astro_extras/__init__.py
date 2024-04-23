@@ -1,7 +1,7 @@
 # Astro SDK Extras project
 # (c) kol, 2023-2024
 
-__version__ = '0.0.11'
+__version__ = '0.0.12'
 
 from .operators.session import (
     open_session, 
@@ -28,6 +28,9 @@ from .operators.direct import (
 from .sensors.file import (
     FileChangedSensor
 )
+from .sensors.auto import (
+    AutoOnlyTaskSensor
+)
 from .utils.template import (
     get_template_file,
     get_template,
@@ -47,4 +50,3 @@ from .utils.datetime_local import (
     days_ago,
     months_ago
 )
-
