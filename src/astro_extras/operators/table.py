@@ -1,12 +1,13 @@
 # Astro SDK Extras project
-# (c) kol, 2023
+# (c) kol, 2023-2024
 
 """ Table operations """
 
 import logging
 import pandas as pd
-from sqlalchemy import text
+import warnings
 
+from sqlalchemy import text
 from airflow.models.dag import DagContext
 from airflow.utils.context import Context
 from airflow.models.xcom_arg import XComArg
@@ -21,12 +22,12 @@ from astro.sql.table import BaseTable, Table
 from astro.databases.base import BaseDatabase
 from astro.airflow.datasets import kwargs_with_datasets
 
-from typing import Iterable, List
-
 from .session import ETLSession, ensure_session
 from ..utils.utils import ensure_table, schedule_ops, split_table_name
 from ..utils.template import get_template_file
 from ..utils.data_compare import compare_datasets, compare_timed_dict
+
+from typing import Iterable, List, Literal
 
 class TableTransfer(GenericTransfer):
     """
@@ -176,6 +177,46 @@ class CompareTableOperator(ChangedTableTransfer):
         if not self._compare_datasets(stop_on_first_diff=True, logger=logger):
             raise AirflowFailException(f'Differences detected')
 
+class DeltaTableTransfer(ChangedTableTransfer):
+    """
+    Table transfer operator to be used within `transfer_table` function.
+    Compares source and target data and transfers delta if any changes detected.
+    Requiures `xxx_a` view to exist on target. Also, target table must have
+    `_modified' and `_deleted` attributes of `timestamp with time zone` type.
+    """
+
+    ui_color = "#608a3e"
+
+    def execute(self, context: Context):
+        """ Execute operator """
+        self._pre_execute(context)
+
+        # compare datasets and get delta frames (modified/deleted)
+        dest_db = create_database(self.destination.conn_id)
+        dfm, dfd = self._compare_datasets(stop_on_first_diff=False)
+
+        if dfm is not None and not dfm.empty:
+            # New and updated
+            dfm['_modified'] = pd.Timestamp.utcnow()
+            dfm['_deleted'] = None
+            if self.session is not None:
+                dfm['session_id'] = self.session.session_id
+
+            dfm.columns = [x.lower() for x in dfm.columns]
+            self.log.info(f'Saving new and modified records ({dfm.shape[0]}) to {self.destination_table}')
+            dest_db.load_pandas_dataframe_to_table(dfm, self.destination, if_exists='append')
+
+        if dfd is not None and not dfd.empty:
+            # Deleted
+            dfd['_modified'] = pd.Timestamp.utcnow()
+            dfd['_deleted'] = pd.Timestamp.utcnow()
+            if self.session.session_id is not None:
+                dfd['session_id'] = self.session.session_id
+
+            dfd.columns = [x.lower() for x in dfd.columns]
+            self.log.info(f'Saving deleted records ({dfd.shape[0]}) to {self.destination_table}')
+            dest_db.load_pandas_dataframe_to_table(dfd, self.destination, if_exists='append')
+
 class TimedTableTransfer(TableTransfer):
     """
     Table transfer operator to be used within `update_timed_dict` function.
@@ -242,6 +283,12 @@ class TimedTableTransfer(TableTransfer):
 
             if df_opening is not None:
                 df_opening.to_sql(dest_table, conn, schema=dest_schema, index=False, if_exists='append')
+
+_TRANSFER_CLASS_MAPPING = {
+    'default': TableTransfer,
+    'changes': ChangedTableTransfer,
+    'delta': DeltaTableTransfer
+}
 
 def load_table(
         table: str | BaseTable,
@@ -353,7 +400,8 @@ def transfer_table(
         source_conn_id: str | None = None,
         destination_conn_id: str | None = None,
         session: XComArg | ETLSession | None = None,
-        changes_only: bool | None = False,
+        changes_only: bool | None = None,
+        mode: Literal['default', 'changes', 'delta'] = 'default',
         **kwargs) -> XComArg:
     
     """ Cross-database data transfer.
@@ -416,6 +464,13 @@ def transfer_table(
             by runnning `destination_sql`. By default, this query will be built using 
             `<destination_table>_a` view to get actual data.
 
+            Deprecated since 0.0.13, use `mode == 'changes'` instead.
+
+        mode:   Transfer mode:
+            - `default`: Transfers all data from source to target
+            - `changes`: Transfers all data if there are any differences between source and target
+            - `delta`: Transfers deltas implementing 'logical sync` between source and the target.
+
         kwargs:     Any parameters passed to underlying operator (e.g. `preoperator`, ...)
 
     Returns:
@@ -437,10 +492,16 @@ def transfer_table(
         >>>     transfer_table('public.table_data', session=sess)
 
     """
-
     source_table = ensure_table(source, source_conn_id)
     dest_table = ensure_table(target or source_table, destination_conn_id)
-    op_cls = TableTransfer if not changes_only else ChangedTableTransfer
+
+    if changes_only is not None:
+        warnings.warn('`changes_only` is deprecated since 0.0.13, use `mode == "changes"` instead')
+        mode = 'changes' if changes_only else 'default'
+
+    if (op_cls := _TRANSFER_CLASS_MAPPING.get(mode)) is None:
+        raise ValueError(f'Invalid transfer mode {mode}')
+    
     op = op_cls(
         source_table=source_table,
         destination_table=dest_table,
@@ -459,13 +520,14 @@ def transfer_tables(
         group_id: str | None = None,
         num_parallel: int = 1,
         session: XComArg | ETLSession | None = None,
-        changes_only: bool | None = False,
+        changes_only: bool | None = None,
+        mode: Literal['default', 'changes', 'delta'] = 'default',
         **kwargs) -> TaskGroup:
 
     """ Transfer multiple tables.
 
-    Creates an Airflow task group consisting of `TableTransfer` operators 
-    for each table pair from `source_tables` and `target_tables` lists.
+    Creates an Airflow task group with transfer tasks for each table pair 
+    from `source_tables` and `target_tables` lists.
 
     See `transfer_table` for more information.
     """
@@ -474,7 +536,14 @@ def transfer_tables(
         raise AirflowFailException(f'Source and target tables list size must be equal')
 
     target_tables = target_tables or source_tables
-    op_cls = TableTransfer if not changes_only else ChangedTableTransfer
+
+    if changes_only is not None:
+        warnings.warn('`changes_only` is deprecated since 0.0.13, use `mode == "changes"` instead')
+        mode = 'changes' if changes_only else 'default'
+
+    if (op_cls := _TRANSFER_CLASS_MAPPING.get(mode)) is None:
+        raise ValueError(f'Invalid transfer mode {mode}')
+    
 
     with TaskGroup(
         group_id or 'transfer-tables', 

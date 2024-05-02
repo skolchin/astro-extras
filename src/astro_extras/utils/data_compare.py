@@ -56,10 +56,10 @@ def _check_timestamp_types(df_a: pd.DataFrame, df_b: pd.DataFrame, exclude_cols:
 def compare_datasets(
     df_src: pd.DataFrame, 
     df_trg: pd.DataFrame, 
-    id_cols: Iterable = None, 
-    exclude_cols: Iterable = None, 
+    id_cols: Iterable | None = None, 
+    exclude_cols: Iterable | None = None, 
     stop_on_first_diff: bool = True,
-    logger: logging.Logger = None) -> Union[bool, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
+    logger: logging.Logger | None = None) -> Union[bool, Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]]:
 
     """ Compare two dataframes by columns, their types and values.
 
