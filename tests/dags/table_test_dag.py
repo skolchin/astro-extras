@@ -55,7 +55,7 @@ with DAG(
         # Create source table with data and target table without data
         data.append_tables_to_db()
 
-    create_tables() >>\
-        transfer_table(source='test_table', target='test_table', source_conn_id='source_db', destination_conn_id='target_db') >>\
-                    transfer_tables(source_tables=['test_tables_1', 'test_tables_2', 'test_tables_3'], source_conn_id='source_db', destination_conn_id='target_db')
+    create_tables() >> \
+    transfer_table(source='test_table', target='test_table', source_conn_id='source_db', destination_conn_id='target_db') >> \
+    transfer_tables(source_tables=['test_tables_1', 'test_tables_2', 'test_tables_3'], source_conn_id='source_db', destination_conn_id='target_db')
 

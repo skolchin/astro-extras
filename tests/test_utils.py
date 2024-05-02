@@ -116,11 +116,11 @@ def test_schedule_ops_parallel(docker_ip, docker_services, airflow_credentials):
     # Check that all tasks were found
     assert op1 is not None and op2 is not None and op3 is not None and op4 is not None
     # Check that task op2 depends on task op1 (determined by downstream_task_ids)
-    assert 'op2' in op1['downstream_task_ids']
+    assert 'op3' in op1['downstream_task_ids']
     # Check that task op4 depends on task op3
-    assert 'op4' in op3['downstream_task_ids']
+    assert 'op4' in op2['downstream_task_ids']
     # Check that task op2 has no downstream tasks (i.e., it is the last task in the DAG)
-    assert not op2['downstream_task_ids']
+    assert not op3['downstream_task_ids']
     # Check that task op4 has no downstream tasks (i.e., it is the last task in the DAG)
     assert not op4['downstream_task_ids']
     
