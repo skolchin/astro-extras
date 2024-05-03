@@ -25,7 +25,7 @@ def docker_cleanup(keep_docker, docker_compose_file):
     if not keep_docker:
         return get_cleanup_command() 
     
-    logger.warning(f'To stop test docker run: docker compose down {docker_compose_file} -v')
+    logger.warning(f'To stop test dockers use: docker compose -f {docker_compose_file} -p astro-extras-test down -v')
     return None
 
 @pytest.fixture(scope="session")

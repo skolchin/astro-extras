@@ -23,6 +23,7 @@ class TestData:
         num_tables: int = None, 
         name_tables: List[str]=None, 
         schema: str = 'public',
+        with_session_id: bool = False,
         db: str = 'postgres') -> None:
         """
         Initialize the TestData object with connection information and parameters.
@@ -46,6 +47,7 @@ class TestData:
         self.name_tables = name_tables
         self.metadata: MetaData = Metadata(schema=schema)
         self.db = db
+        self.with_session_id = with_session_id
         self.validate_params()
 
     def validate_params(self):
@@ -90,12 +92,7 @@ class TestData:
         Returns:
             List[Column]: A list of sqlalchemy Column objects.
         """
-        columns = []
-        for i in range(num_cols):
-            col_name = hashlib.md5(str(i).encode()).hexdigest()
-            col_type = String
-            column = Column(col_name, col_type)
-            columns.append(column)
+        columns = [Column(hashlib.md5(str(i).encode()).hexdigest(), String) for i in range(num_cols)]
         return columns
 
     @staticmethod
@@ -189,10 +186,38 @@ class TestData:
                 # Create target table if necessary
                 if create_target_table_without_data:
                     # Create target table using sqlalchemy table object
-                    sqla_table(f'{table.name}', MetaData(schema=self.metadata.schema), *table.columns).create(tgt_conn)
+                    # Also, add session_id as 1st column if requested
+                    target_columns = table.columns.copy()
+                    if self.with_session_id:
+                        target_columns.insert(0, Column('session_id', Integer))
+                    sqla_table(f'{table.name}', MetaData(schema=self.metadata.schema), *target_columns).create(tgt_conn)
                 else:
                     # Create target table using dataframe structure
                     data.to_sql(name=table.name, con=tgt_conn, if_exists='replace', index=False, method='multi')
+
+                # create actual data view
+                if not self.with_session_id:
+                    tgt_conn.execute(f'create or replace view {self.metadata.schema or "public"}.{table.name}_a ' \
+                                    f'as select * from {self.metadata.schema or "public"}.{table.name}')
+                else:
+                    tgt_conn.execute(f'create or replace view {self.metadata.schema or "public"}.{table.name}_a ' \
+                                    f'as select * from {self.metadata.schema or "public"}.{table.name} ' \
+                                    f'where session_id = (select max(session_id) from public.sessions where status=\'success\')')
+
+    def renew_tables_in_source_db(self):
+        """ Overwrite data in the source database with random values """
+        # Initialize database connections
+        source_db = self.conn_to_database(self.conn_id).sqlalchemy_engine
+        
+        # Open connections
+        with source_db.connect() as src_conn:
+            # Loop over tables
+            for table in self.tables:
+                # Generate data for table
+                data = self.generate_random_data(self.num_rows, table.columns)
+
+                # Load data into source table
+                data.to_sql(name=table.name, con=src_conn, if_exists='replace', index=False)
 
     def create_tables(self, tables: List[Table], conn: PostgresDatabase = None) -> List[Table]:
         """
@@ -322,3 +347,4 @@ class TestData:
 
     def __exit__(self, type, value, traceback):
         pass
+

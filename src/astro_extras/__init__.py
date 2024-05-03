@@ -17,9 +17,14 @@ from .operators.table import (
     declare_tables,
     transfer_table, 
     transfer_tables,
+    transfer_changed_table,
+    transfer_changed_tables,
+    transfer_ods_table,
+    transfer_ods_tables,
+    compare_table,
+    compare_tables,
     update_timed_table, 
     update_timed_tables,
-    compare_tables,
 )
 from .operators.direct import (
     run_sql_template,

@@ -114,7 +114,7 @@ class TableTransfer(GenericTransfer):
             
 class ChangedTableTransfer(TableTransfer):
     """
-    Table transfer operator to be used within `transfer_table` function.
+    Table transfer operator to be used within `transfer_changed_table` function.
     Compares source and target data and transfers only if any changes detected.
     Requiures `xxx_a` view to exist on target.
     """
@@ -177,9 +177,9 @@ class CompareTableOperator(ChangedTableTransfer):
         if not self._compare_datasets(stop_on_first_diff=True, logger=logger):
             raise AirflowFailException(f'Differences detected')
 
-class DeltaTableTransfer(ChangedTableTransfer):
+class SyncTableTransfer(ChangedTableTransfer):
     """
-    Table transfer operator to be used within `transfer_table` function.
+    Table transfer operator to be used within `transfer_ods_table` function.
     Compares source and target data and transfers delta if any changes detected.
     Requiures `xxx_a` view to exist on target. Also, target table must have
     `_modified' and `_deleted` attributes of `timestamp with time zone` type.
@@ -283,12 +283,6 @@ class TimedTableTransfer(TableTransfer):
 
             if df_opening is not None:
                 df_opening.to_sql(dest_table, conn, schema=dest_schema, index=False, if_exists='append')
-
-_TRANSFER_CLASS_MAPPING = {
-    'default': TableTransfer,
-    'changes': ChangedTableTransfer,
-    'delta': DeltaTableTransfer
-}
 
 def load_table(
         table: str | BaseTable,
@@ -401,7 +395,6 @@ def transfer_table(
         destination_conn_id: str | None = None,
         session: XComArg | ETLSession | None = None,
         changes_only: bool | None = None,
-        mode: Literal['default', 'changes', 'delta'] = 'default',
         **kwargs) -> XComArg:
     
     """ Cross-database data transfer.
@@ -464,12 +457,7 @@ def transfer_table(
             by runnning `destination_sql`. By default, this query will be built using 
             `<destination_table>_a` view to get actual data.
 
-            Deprecated since 0.0.13, use `mode == 'changes'` instead.
-
-        mode:   Transfer mode:
-            - `default`: Transfers all data from source to target
-            - `changes`: Transfers all data if there are any differences between source and target
-            - `delta`: Transfers deltas implementing 'logical sync` between source and the target.
+            Deprecated since 0.0.13, use `transfer_changed_table` instead.
 
         kwargs:     Any parameters passed to underlying operator (e.g. `preoperator`, ...)
 
@@ -496,12 +484,9 @@ def transfer_table(
     dest_table = ensure_table(target or source_table, destination_conn_id)
 
     if changes_only is not None:
-        warnings.warn('`changes_only` is deprecated since 0.0.13, use `mode == "changes"` instead')
-        mode = 'changes' if changes_only else 'default'
+        warnings.warn('`changes_only` is deprecated since 0.0.13, use `transfer_changed_table()` instead')
 
-    if (op_cls := _TRANSFER_CLASS_MAPPING.get(mode)) is None:
-        raise ValueError(f'Invalid transfer mode {mode}')
-    
+    op_cls = TableTransfer if not changes_only else ChangedTableTransfer
     op = op_cls(
         source_table=source_table,
         destination_table=dest_table,
@@ -521,7 +506,6 @@ def transfer_tables(
         num_parallel: int = 1,
         session: XComArg | ETLSession | None = None,
         changes_only: bool | None = None,
-        mode: Literal['default', 'changes', 'delta'] = 'default',
         **kwargs) -> TaskGroup:
 
     """ Transfer multiple tables.
@@ -538,12 +522,9 @@ def transfer_tables(
     target_tables = target_tables or source_tables
 
     if changes_only is not None:
-        warnings.warn('`changes_only` is deprecated since 0.0.13, use `mode == "changes"` instead')
-        mode = 'changes' if changes_only else 'default'
+        warnings.warn('`changes_only` is deprecated since 0.0.13, use `transfer_changed_tables()` instead')
 
-    if (op_cls := _TRANSFER_CLASS_MAPPING.get(mode)) is None:
-        raise ValueError(f'Invalid transfer mode {mode}')
-    
+    op_cls = TableTransfer if not changes_only else ChangedTableTransfer
 
     with TaskGroup(
         group_id or 'transfer-tables', 
@@ -568,6 +549,209 @@ def transfer_tables(
 
     return tg
 
+def transfer_changed_table(
+        source: str | BaseTable,
+        target: str | BaseTable | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        session: XComArg | ETLSession | None = None,
+        **kwargs) -> XComArg:
+    
+    """ Cross-database data transfer.
+
+    This function implements cross-database geterogenous data transfer.
+
+    The operator runs a templated SQL on source (`sql`) and target (`destination_sql`)
+    and compares results. If there are any differences found among them,
+    it will transfer all the source data the same way as `transfer_table` 
+    creating a new snapshot on the target.
+
+    `destination_sql` query is pre-built to run on `<destination_table>_a` view to get actual data.
+
+    See `transfer_table` for details on arguments.
+
+    Returns:
+        `XComArg` object
+
+    """
+    source_table = ensure_table(source, source_conn_id)
+    dest_table = ensure_table(target or source_table, destination_conn_id)
+
+    op = ChangedTableTransfer(
+        source_table=source_table,
+        destination_table=dest_table,
+        session=session,
+        **kwargs_with_datasets(kwargs=kwargs, 
+                               input_datasets=source_table, 
+                               output_datasets=dest_table)
+    )
+    return XComArg(op)
+
+def transfer_changed_tables(
+        source_tables: List[str | Table],
+        target_tables: List[str | Table] | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        session: XComArg | ETLSession | None = None,
+        **kwargs) -> TaskGroup:
+
+    """ Transfer multiple tables.
+
+    Creates an Airflow task group with transfer tasks for each table pair 
+    from `source_tables` and `target_tables` lists.
+
+    See `transfer_changed_table` for more information.
+    """
+
+    if target_tables and len(target_tables) != len(source_tables):
+        raise AirflowFailException(f'Source and target tables list size must be equal')
+
+    target_tables = target_tables or source_tables
+
+    with TaskGroup(
+        group_id or 'transfer-tables', 
+        add_suffix_on_collision=True,
+        prefix_group_id=False) as tg:
+
+        ops_list = []
+        for (source, target) in zip(source_tables, target_tables):
+            source_table = ensure_table(source, source_conn_id)
+            dest_table = ensure_table(target, destination_conn_id) or source_table
+            op = ChangedTableTransfer(
+                source_table=source_table,
+                destination_table=dest_table,
+                session=session,
+                **kwargs_with_datasets(
+                    kwargs=kwargs, 
+                    input_datasets=source_table, 
+                    output_datasets=dest_table))
+            ops_list.append(op)
+
+        schedule_ops(ops_list, num_parallel)
+
+    return tg
+
+def transfer_ods_table(
+        source: str | BaseTable,
+        target: str | BaseTable | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        session: XComArg | ETLSession | None = None,
+        **kwargs) -> XComArg:
+    
+    """ Cross-database ODS-like data transfer.
+
+    Returns:
+        `XComArg` object
+
+    """
+    source_table = ensure_table(source, source_conn_id)
+    dest_table = ensure_table(target or source_table, destination_conn_id)
+
+    op = SyncTableTransfer(
+        source_table=source_table,
+        destination_table=dest_table,
+        session=session,
+        **kwargs_with_datasets(kwargs=kwargs, 
+                               input_datasets=source_table, 
+                               output_datasets=dest_table)
+    )
+    return XComArg(op)
+
+def transfer_ods_tables(
+        source_tables: List[str | Table],
+        target_tables: List[str | Table] | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        session: XComArg | ETLSession | None = None,
+        **kwargs) -> TaskGroup:
+
+    """ Transfer multiple tables.
+
+    Creates an Airflow task group with transfer tasks for each table pair 
+    from `source_tables` and `target_tables` lists.
+
+    See `transfer_changed_table` for more information.
+    """
+
+    if target_tables and len(target_tables) != len(source_tables):
+        raise AirflowFailException(f'Source and target tables list size must be equal')
+
+    target_tables = target_tables or source_tables
+
+    with TaskGroup(
+        group_id or 'transfer-tables', 
+        add_suffix_on_collision=True,
+        prefix_group_id=False) as tg:
+
+        ops_list = []
+        for (source, target) in zip(source_tables, target_tables):
+            source_table = ensure_table(source, source_conn_id)
+            dest_table = ensure_table(target, destination_conn_id) or source_table
+            op = SyncTableTransfer(
+                source_table=source_table,
+                destination_table=dest_table,
+                session=session,
+                **kwargs_with_datasets(
+                    kwargs=kwargs, 
+                    input_datasets=source_table, 
+                    output_datasets=dest_table))
+            ops_list.append(op)
+
+        schedule_ops(ops_list, num_parallel)
+
+    return tg
+
+def compare_table(
+        source: str | BaseTable,
+        target: str | BaseTable | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        **kwargs) -> TaskGroup:
+
+    """ Compare two tables.
+
+    Creates a task of `CompareTableTransfer` operator to compare
+    given tables, which would fail if any differences
+    are detected among them.
+
+    Args:
+        source: Either a table name or a `Table` object which would be a data source.
+            If a string name is provided, it may contain schema definition denoted by `.`. 
+            For `Table` objects, schema must be defined in `Metadata` field,
+            otherwise Astro SDK might fall to use its default schema.
+            If a SQL template exists for this table name, it will be executed,
+            otherwise all table data will be selected.
+
+        target: Either a table name or a `Table` object where data will be saved into.
+            If a name is provided, it may contain schema definition denoted by `.`. 
+            For `Table` objects, schema must be defined in `Metadata` field,
+            otherwise Astro SDK might fall to use its default schema.
+            If omitted, `source` argument value is used (this makes sense only
+            with string table name and different connections).
+
+        source_conn_id: Source database Airflow connection.
+            Used only with string source table name; for `Table` objects, `conn_id` field is used.
+            If omitted and `session` argument is provided, `session.source_conn_id` will be used.
+
+        destination_conn_id: Destination database Airflow connection.
+            Used only with string target table name; for `Table` objects, `conn_id` field is used.
+            If omitted and `session` argument is provided, `session.destination_conn_id` will be used.
+
+    """
+    source_table = ensure_table(source, source_conn_id)
+    dest_table = ensure_table(target or source_table, destination_conn_id)
+
+    op = CompareTableOperator(
+        source_table=source_table, 
+        destination_table=dest_table, 
+        task_id=f'compare-{source_table.name}')
+    return XComArg(op)
+
 def compare_tables(
         source_tables: List[str | Table],
         target_tables: List[str | Table] | None = None,
@@ -583,6 +767,8 @@ def compare_tables(
     for each table pair from `source_tables` and `target_tables` lists.
     Each operator will compare source and target table and fails if any differences
     are detected among them.
+
+    See `compare_table` for details.
     """
     if not target_tables or len(target_tables) != len(source_tables):
         raise AirflowFailException(f'Source and target tables list size must be equal')
@@ -608,7 +794,7 @@ def update_timed_table(
         session: XComArg | ETLSession | None = None,
         **kwargs) -> XComArg:
     
-    """ Updates timed dictionary table """
+    """ Updates timed dictionary table (experimental) """
 
     source_table = ensure_table(source, source_conn_id)
     dest_table = ensure_table(target, destination_conn_id) or source_table
@@ -632,7 +818,7 @@ def update_timed_tables(
         session: XComArg | ETLSession | None = None,
         **kwargs) -> TaskGroup:
 
-    """ Updates multiple timed dictionary tables """
+    """ Updates multiple timed dictionary tables (experimental )"""
 
     if target_tables and len(target_tables) != len(source_tables):
         raise AirflowFailException(f'Source and target tables list size must be equal')

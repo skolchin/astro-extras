@@ -6,6 +6,7 @@
 import pytest
 import sqlalchemy
 import pandas as pd
+from itertools import zip_longest
 from confsupport import run_dag, logger
 from astro.sql.table import Table
 from sqlalchemy import MetaData, Table as sqlaTable, select, func, inspect
@@ -14,6 +15,8 @@ try:
     from astro_extras import declare_tables
 except ModuleNotFoundError:
     declare_tables = None
+
+IGNORE_ATTR = set(['session_id', '_deleted', '_modified'])
 
 def compare_table_contents(source_table: sqlalchemy.Table, destination_table: sqlalchemy.Table) -> bool:
     """
@@ -29,11 +32,24 @@ def compare_table_contents(source_table: sqlalchemy.Table, destination_table: sq
 
     # Get data from source and destination tables.
     with source_table.bind.connect() as src_conn, destination_table.bind.connect() as dest_conn:
-        source_data = src_conn.execute(source_table.select()).fetchall()
-        dest_data = dest_conn.execute(destination_table.select()).fetchall()
+        source_data = src_conn.execute(source_table.select())
+        dest_data = dest_conn.execute(destination_table.select())
 
-    # Check if data is identical.
-    return source_data == dest_data
+    # Check if data is identical ignoring technical fields
+    for (source_row, dest_row) in zip_longest(source_data, dest_data):
+        if source_row is None or dest_row is None:
+            return False
+        
+        source_attr = source_row._asdict()
+        dest_attr = dest_row._asdict()
+        for key in source_attr:
+            if key not in IGNORE_ATTR:
+                src_val = source_attr[key]
+                dst_val = dest_attr[key]
+                if src_val != dst_val:
+                    return False
+
+    return True
 
 def get_table_row_count(table: sqlalchemy.Table) -> int:
     """
@@ -70,11 +86,12 @@ def compare_table_schemas(source_table: sqlalchemy.Table, destination_table: sql
     """
 
     # Get column names for source and destination tables.
-    source_columns = [column.name for column in source_table.columns]
-    dest_columns = [column.name for column in destination_table.columns]
+    # Destination might contain some technical fields ('session_id') which are ignored
+    source_columns = set([column.name for column in source_table.columns]) - IGNORE_ATTR
+    dest_columns = set([column.name for column in destination_table.columns]) - IGNORE_ATTR
 
-    # Check if columns match.
-    if sorted(source_columns) != sorted(dest_columns):
+    # Check if columns match
+    if source_columns != dest_columns:
         return False
 
     # Get index names for source and destination tables.
@@ -86,6 +103,39 @@ def compare_table_schemas(source_table: sqlalchemy.Table, destination_table: sql
         return False
 
     return True
+
+def assert_tables_equal(source_db, target_db, lst_tables, use_actuals_view: bool = False):
+    # Create connections to the source and target databases.
+    with source_db.connect() as src_conn,\
+         target_db.connect() as tgt_conn:
+
+        # Get metadata of tables in source and target databases.
+        # Reflect on the metadata of source and target databases to get their table schema.
+        meta_src = MetaData(src_conn)
+        meta_src.reflect()
+        meta_tgt = MetaData(tgt_conn)
+        meta_tgt.reflect()
+
+        # Check if required tables exist in source and target databases.
+        for table in lst_tables:
+            assert table in meta_src.tables
+            assert table in meta_tgt.tables
+
+        # Get the tables to be compared in source and target databases.
+        src_tables = [sqlaTable(table_name, meta_src) for table_name in lst_tables]
+        tgt_tables = [sqlaTable(table_name, meta_tgt) for table_name in lst_tables]
+
+        # Compare schemas
+        for src_table, tgt_table in zip(src_tables, tgt_tables):
+            assert compare_table_schemas(src_table, tgt_table)
+
+        # Now compare the content using actuals view if requested
+        src_tables = [sqlaTable(table_name, meta_src) for table_name in lst_tables]
+        tgt_tables = [sqlaTable(f'{table_name}{"_a" if use_actuals_view else ""}', meta_tgt) for table_name in lst_tables]
+
+        # Compare the tables row count and schemas
+        for src_table, tgt_table in zip(src_tables, tgt_tables):
+            assert compare_table_contents(src_table, tgt_table)
 
 def test_table_load_save(docker_ip, docker_services, airflow_credentials, target_db):
     logger.info(f'Testing table load and save')
@@ -120,40 +170,42 @@ def test_table_declare_tables():
         assert isinstance(i, Table)
 
 def test_transfer_tables(docker_ip, docker_services, airflow_credentials, source_db, target_db):
-    # Test function to transfer tables.
+    # Test function to transfer_tables() operator without session.
 
-    logger.info(f'Testing transfer tables function')
+    logger.info(f'Testing transfer_tables function')
 
     # Trigger DAG "test-transfer-table" to transfer tables from the source to target database.
-    res_dag_run = run_dag('test-transfer-tables', docker_ip, docker_services, airflow_credentials)
+    result = run_dag('test-transfer-tables', docker_ip, docker_services, airflow_credentials)
+    assert result == 'success'
 
-    # Check if DAG run was successful.
-    assert res_dag_run
+    # Compare tables
+    assert_tables_equal(source_db, target_db, ['test_table', 'test_tables_1', 'test_tables_2', 'test_tables_3'])
 
-    # Create connections to the source and target databases.
-    with source_db.connect() as src_conn,\
-         target_db.connect() as tgt_conn:
+def test_transfer_tables_session(docker_ip, docker_services, airflow_credentials, source_db, target_db):
+    # Test function to transfer_tables() operator without session.
 
-        lst_tables = ['test_table', 'test_tables_1', 'test_tables_2', 'test_tables_3']
-        
-        # Get metadata of tables in source and target databases.
-        # Reflect on the metadata of source and target databases to get their table schema.
-        meta_src = MetaData(src_conn)
-        meta_src.reflect()
-        meta_tgt = MetaData(tgt_conn)
-        meta_tgt.reflect()
+    logger.info(f'Testing transfer_tables function under ETL session')
 
-        # Check if required tables exist in source and target databases.
-        for table in lst_tables:
-            assert table in meta_src.tables
-            assert table in meta_tgt.tables
+    # Trigger DAG "test-transfer-table" to transfer tables from the source to target database.
+    result = run_dag('test-transfer-tables-session', docker_ip, docker_services, airflow_credentials)
+    assert result == 'success'
 
-        # Get the tables to be compared in source and target databases.
-        src_tables = [sqlaTable(table_name, meta_src) for table_name in lst_tables]
-        tgt_tables = [sqlaTable(table_name, meta_tgt) for table_name in lst_tables]
+    # Compare tables
+    assert_tables_equal(source_db, target_db, ['test_table'], use_actuals_view=True)
 
-        # Compare the table schemas, contents and row counts of the tables in source and target databases.
-        for src_table, tgt_table in zip(src_tables, tgt_tables):
-            assert compare_table_schemas(src_table, tgt_table)
-            assert compare_table_contents(src_table, tgt_table)
-            assert get_table_row_count(src_table) == get_table_row_count(tgt_table)
+def test_transfer_changed_tables(docker_ip, docker_services, airflow_credentials, source_db, target_db):
+    # Test function to transfer_changed_tables() operator.
+
+    logger.info(f'Testing transfer_changed_tables function')
+
+    # Trigger DAG "test-transfer-table-session" to transfer tables from the source to target database.
+    result = run_dag('test-transfer-tables-session', docker_ip, docker_services, airflow_credentials)
+    assert result == 'success'
+
+    # Trigger DAG "test-transfer-changed-table" to transfer changes from the source to target database.
+    result = run_dag('test-transfer-changed-tables', docker_ip, docker_services, airflow_credentials)
+    assert result == 'success'
+
+    # Compare tables
+    assert_tables_equal(source_db, target_db, ['test_table'], use_actuals_view=True)
+

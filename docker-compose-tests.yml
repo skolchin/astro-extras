@@ -4,7 +4,6 @@
 # Docker compose file for unit testing
 # Should always be the same as original docker-compose.yml except marked changes
 
-version: '3'
 x-airflow-common:
   &airflow-common
   env_file: .env
