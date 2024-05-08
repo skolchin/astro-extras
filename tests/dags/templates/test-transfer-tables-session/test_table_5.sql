@@ -1,0 +1,1 @@
+select {{ti.xcom_pull(key="session").session_id}} as session_id, t.* from public.test_table_5 t where id between 10 and 20

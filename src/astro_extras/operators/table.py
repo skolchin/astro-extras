@@ -142,7 +142,7 @@ class ChangedTableTransfer(TableTransfer):
 
         self.destination_sql: str = dest_sql
 
-    def _compare_datasets(self, stop_on_first_diff: bool, logger: logging.Logger | None = None) -> bool:
+    def _compare_datasets(self, stop_on_first_diff: bool, logger: logging.Logger | None = None):
         """ Internal - compare source and target dictionaries """
 
         logger = logger or self.log
@@ -177,9 +177,10 @@ class CompareTableOperator(ChangedTableTransfer):
         if not self._compare_datasets(stop_on_first_diff=True, logger=logger):
             raise AirflowFailException(f'Differences detected')
 
-class SyncTableTransfer(ChangedTableTransfer):
+class OdsTableTransfer(ChangedTableTransfer):
     """
     Table transfer operator to be used within `transfer_ods_table` function.
+    
     Compares source and target data and transfers delta if any changes detected.
     Requiures `xxx_a` view to exist on target. Also, target table must have
     `_modified' and `_deleted` attributes of `timestamp with time zone` type.
@@ -191,31 +192,27 @@ class SyncTableTransfer(ChangedTableTransfer):
         """ Execute operator """
         self._pre_execute(context)
 
-        # compare datasets and get delta frames (modified/deleted)
+        # compare datasets and get delta frames (new/modified/deleted)
         dest_db = create_database(self.destination.conn_id)
-        dfm, dfd = self._compare_datasets(stop_on_first_diff=False)
+        dfn, dfm, dfd = self._compare_datasets(stop_on_first_diff=False)
 
-        if dfm is not None and not dfm.empty:
-            # New and updated
-            dfm['_modified'] = pd.Timestamp.utcnow()
-            dfm['_deleted'] = None
-            if self.session is not None:
-                dfm['session_id'] = self.session.session_id
+        def _save_data(df, modified, deleted, title):
+            if df is not None and not df.empty:
+                if self.session is not None:
+                    df.drop(columns=set(['session_id', '_modified', '_deleted']) & set(df.columns), inplace=True)
+                    df.insert(0, '_deleted', deleted)
+                    df.insert(0, '_modified', modified)
+                    df.insert(0, 'session_id', self.session.session_id)
+                else:
+                    df['_modified'] = modified
+                    df['_deleted'] = deleted
 
-            dfm.columns = [x.lower() for x in dfm.columns]
-            self.log.info(f'Saving new and modified records ({dfm.shape[0]}) to {self.destination_table}')
-            dest_db.load_pandas_dataframe_to_table(dfm, self.destination, if_exists='append')
+                self.log.info(f'Saving {title} records ({df.shape[0]}) to {self.destination_table}')
+                dest_db.load_pandas_dataframe_to_table(df, self.destination, if_exists='append')
 
-        if dfd is not None and not dfd.empty:
-            # Deleted
-            dfd['_modified'] = pd.Timestamp.utcnow()
-            dfd['_deleted'] = pd.Timestamp.utcnow()
-            if self.session.session_id is not None:
-                dfd['session_id'] = self.session.session_id
-
-            dfd.columns = [x.lower() for x in dfd.columns]
-            self.log.info(f'Saving deleted records ({dfd.shape[0]}) to {self.destination_table}')
-            dest_db.load_pandas_dataframe_to_table(dfd, self.destination, if_exists='append')
+        _save_data(dfn, pd.Timestamp.utcnow(), pd.NaT, 'new')
+        _save_data(dfm, pd.Timestamp.utcnow(), pd.NaT, 'modified')
+        _save_data(dfd, pd.Timestamp.utcnow(), pd.Timestamp.utcnow(), 'deleted')
 
 class TimedTableTransfer(TableTransfer):
     """
@@ -650,7 +647,7 @@ def transfer_ods_table(
     source_table = ensure_table(source, source_conn_id)
     dest_table = ensure_table(target or source_table, destination_conn_id)
 
-    op = SyncTableTransfer(
+    op = OdsTableTransfer(
         source_table=source_table,
         destination_table=dest_table,
         session=session,
@@ -670,12 +667,12 @@ def transfer_ods_tables(
         session: XComArg | ETLSession | None = None,
         **kwargs) -> TaskGroup:
 
-    """ Transfer multiple tables.
+    """ Transfer multiple ODS tables.
 
     Creates an Airflow task group with transfer tasks for each table pair 
     from `source_tables` and `target_tables` lists.
 
-    See `transfer_changed_table` for more information.
+    See `transfer_ods_table` for more information.
     """
 
     if target_tables and len(target_tables) != len(source_tables):
@@ -692,7 +689,7 @@ def transfer_ods_tables(
         for (source, target) in zip(source_tables, target_tables):
             source_table = ensure_table(source, source_conn_id)
             dest_table = ensure_table(target, destination_conn_id) or source_table
-            op = SyncTableTransfer(
+            op = OdsTableTransfer(
                 source_table=source_table,
                 destination_table=dest_table,
                 session=session,

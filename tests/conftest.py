@@ -5,6 +5,7 @@
 
 import os
 import pytest
+from pathlib import Path
 from pytest_docker.plugin import get_cleanup_command
 from confsupport import *
 
@@ -70,11 +71,21 @@ def airflow(docker_ip, docker_services):
     return url
 
 @pytest.fixture(scope='session')
-def source_db(db_credentials, docker_ip, docker_services):
+def source_db(db_credentials, docker_ip, docker_services, pytestconfig):
     """ Makes a source database connection as SQLA engine """
-    return get_db_engine('source_db', db_credentials, docker_ip, docker_services)
+    dir = pytestconfig.invocation_params.dir / 'init_source_db'
+    logger.info(f'Initalizing source database using scripts from {dir} directory')
+
+    engine = get_db_engine('source_db', db_credentials, docker_ip, docker_services)
+    init_database(engine, dir)
+    return engine
 
 @pytest.fixture(scope='session')
-def target_db(db_credentials, docker_ip, docker_services):
+def target_db(db_credentials, docker_ip, docker_services, pytestconfig):
     """ Makes a target database connection as SQLA engine """
-    return get_db_engine('target_db', db_credentials, docker_ip, docker_services)
+    dir = pytestconfig.invocation_params.dir / 'init_target_db'
+    logger.info(f'Initalizing target database using scripts from {dir} directory')
+
+    engine = get_db_engine('target_db', db_credentials, docker_ip, docker_services)
+    init_database(engine, dir)
+    return engine

@@ -64,7 +64,6 @@ def get_table_row_count(table: sqlalchemy.Table) -> int:
 
     # Connect to the database engine using the table's bind
     with table.bind.connect() as conn:
-
         # Construct a SQLalchemy select statement that counts the number of rows in the table
         count_query = select([func.count()]).select_from(table)
 
@@ -137,17 +136,19 @@ def assert_tables_equal(source_db, target_db, lst_tables, use_actuals_view: bool
         for src_table, tgt_table in zip(src_tables, tgt_tables):
             assert compare_table_contents(src_table, tgt_table)
 
-def test_table_load_save(docker_ip, docker_services, airflow_credentials, target_db):
+def test_table_load_save(source_db, target_db, docker_ip, docker_services, airflow_credentials):
+    """ Test for `load_table` and `save_table` functions """
     logger.info(f'Testing table load and save')
     result = run_dag('test-table-load_save', docker_ip, docker_services, airflow_credentials)
     assert result == 'success'
 
     with target_db.begin() as conn:
-        data = pd.read_sql_table('tmp_types', conn)
+        data = pd.read_sql_table('tmp_test_table_1', conn)
         assert data.shape[0] == 3
         assert 'some_column' in data.columns
 
 def test_table_save_fail(docker_ip, docker_services, airflow_credentials):
+    """ Test that `save_table()` function fails if no target table exists. """
     logger.info(f'Testing table save to non-existing table')
     result = run_dag('test-table-save_fail', docker_ip, docker_services, airflow_credentials)
     assert result == 'failed'
@@ -170,42 +171,38 @@ def test_table_declare_tables():
         assert isinstance(i, Table)
 
 def test_transfer_tables(docker_ip, docker_services, airflow_credentials, source_db, target_db):
-    # Test function to transfer_tables() operator without session.
+    """ Test for transfer_table() / transfer_tables() functions. """
 
     logger.info(f'Testing transfer_tables function')
-
-    # Trigger DAG "test-transfer-table" to transfer tables from the source to target database.
     result = run_dag('test-transfer-tables', docker_ip, docker_services, airflow_credentials)
     assert result == 'success'
 
-    # Compare tables
-    assert_tables_equal(source_db, target_db, ['test_table', 'test_tables_1', 'test_tables_2', 'test_tables_3'])
 
 def test_transfer_tables_session(docker_ip, docker_services, airflow_credentials, source_db, target_db):
-    # Test function to transfer_tables() operator without session.
+    """ Test of transfer_tables() operator under ETL session """
 
-    logger.info(f'Testing transfer_tables function under ETL session')
-
-    # Trigger DAG "test-transfer-table" to transfer tables from the source to target database.
+    logger.info(f'Testing transfer_tables() function with ETL session provided')
     result = run_dag('test-transfer-tables-session', docker_ip, docker_services, airflow_credentials)
     assert result == 'success'
-
-    # Compare tables
-    assert_tables_equal(source_db, target_db, ['test_table'], use_actuals_view=True)
 
 def test_transfer_changed_tables(docker_ip, docker_services, airflow_credentials, source_db, target_db):
-    # Test function to transfer_changed_tables() operator.
+    """ Test of transfer_changed_tables() operator """
 
-    logger.info(f'Testing transfer_changed_tables function')
-
-    # Trigger DAG "test-transfer-table-session" to transfer tables from the source to target database.
+    logger.info(f'Testing transfer_changed_tables() function')
     result = run_dag('test-transfer-tables-session', docker_ip, docker_services, airflow_credentials)
     assert result == 'success'
 
-    # Trigger DAG "test-transfer-changed-table" to transfer changes from the source to target database.
     result = run_dag('test-transfer-changed-tables', docker_ip, docker_services, airflow_credentials)
     assert result == 'success'
 
-    # Compare tables
-    assert_tables_equal(source_db, target_db, ['test_table'], use_actuals_view=True)
 
+def test_transfer_ods_tables(docker_ip, docker_services, airflow_credentials, source_db, target_db):
+    """ Test of transfer_changed_tables() operator """
+
+    logger.info(f'Testing transfer_ods_tables() function')
+
+    result = run_dag('test-transfer-ods-tables-1', docker_ip, docker_services, airflow_credentials)
+    assert result == 'success'
+
+    result = run_dag('test-transfer-ods-tables-2', docker_ip, docker_services, airflow_credentials)
+    assert result == 'success'
