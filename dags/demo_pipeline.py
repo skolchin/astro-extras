@@ -6,13 +6,15 @@
 import pendulum
 from airflow.models import DAG
 from astro.sql.table import Table, Metadata
-from astro_extras import transfer_table, update_timed_table, ETLSession, run_sql_template
+from astro_extras import *
 
 # Forward table declaration
-source_types_table = Table('types', 'oracle_db')
-source_data_table = Table('table_data', 'oracle_db')
+source_types_table = Table('types', 'source_db')
+source_data_table = Table('table_data', 'source_db')
 stage_types_table = Table('types', 'target_db', metadata=Metadata(schema='stage'))
 stage_data_table = Table('table_data', 'target_db', metadata=Metadata(schema='stage'))
+actuals_types_table = Table('types', 'target_db', metadata=Metadata(schema='actuals'))
+actuals_data_table = Table('table_data', 'target_db', metadata=Metadata(schema='actuals'))
 dwh_dim_types_table = Table('dim_types', 'target_db', metadata=Metadata(schema='dwh'))
 dwh_data_fact_table = Table('data_facts', 'target_db', metadata=Metadata(schema='dwh'))
 
@@ -35,21 +37,35 @@ with DAG(
     # For TABLE_DATA, SQL template is used to select only relevant data 
     # (for demo purpose it simply selects all)
 
-    transfer_table(source_types_table, stage_types_table, changes_only=True, session=session) >> \
+    transfer_changed_table(source_types_table, stage_types_table, session=session) >> \
     transfer_table(source_data_table, stage_data_table, session=session)
 
 with DAG(
-    dag_id='stage-dwh-load',
+    dag_id='stage-actuals-load',
     start_date=pendulum.today().add(days=-1),
     schedule=[stage_types_table, stage_data_table],
     catchup=False,
+    tags=['demo', 'pipeline'],
+) as dag, ETLSession('target_db', 'target_db') as session:
+    """ Stage-to-actuals data upload DAG """
+
+    transfer_actuals_tables(
+        [stage_types_table, stage_data_table], 
+        [actuals_types_table, actuals_data_table], 
+        session=session)
+
+with DAG(
+    dag_id='actuals-dwh-load',
+    start_date=pendulum.today().add(days=-1),
+    schedule=[actuals_types_table, actuals_data_table],
+    catchup=False,
     tags=['demo', 'astro-extras'],
 ) as dag, ETLSession('target_db', 'target_db') as session:
-    """ Stage-to-dwh data processing DAG """
+    """ actuals-to-dwh data processing DAG """
 
     # Update TYPES timed dictionary
     # Update DATA_FACT dwh table
-    update_timed_table(stage_types_table, dwh_dim_types_table, session=session) >> \
+    update_timed_table(actuals_types_table, dwh_dim_types_table, session=session) >> \
     run_sql_template('update_data_fact', 'target_db',
-                     input_tables=[stage_data_table, dwh_dim_types_table],
+                     input_tables=[actuals_data_table, dwh_dim_types_table],
                      affected_tables=[dwh_data_fact_table]) 

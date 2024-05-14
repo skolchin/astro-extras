@@ -6,8 +6,7 @@
 import logging
 import pandas as pd
 import warnings
-
-from sqlalchemy import text
+from sqlalchemy import text, MetaData as SqlaMetadata
 from airflow.models.dag import DagContext
 from airflow.utils.context import Context
 from airflow.models.xcom_arg import XComArg
@@ -15,19 +14,18 @@ from airflow.utils.task_group import TaskGroup
 from airflow.exceptions import AirflowFailException
 from airflow.providers.common.sql.hooks.sql import DbApiHook
 from airflow.operators.generic_transfer import GenericTransfer
-
 from astro import sql as aql
 from astro.databases import create_database
 from astro.sql.table import BaseTable, Table
 from astro.databases.base import BaseDatabase
+from astro.query_modifier import QueryModifier
 from astro.airflow.datasets import kwargs_with_datasets
-
 from .session import ETLSession, ensure_session
-from ..utils.utils import ensure_table, schedule_ops, split_table_name
-from ..utils.template import get_template_file
+from ..utils.utils import ensure_table, schedule_ops, split_table_name, is_same_database_uri
+from ..utils.template import get_template, get_template_file, get_predefined_template
 from ..utils.data_compare import compare_datasets, compare_timed_dict
 
-from typing import Iterable, List, Literal
+from typing import Iterable, Type
 
 class TableTransfer(GenericTransfer):
     """
@@ -49,20 +47,20 @@ class TableTransfer(GenericTransfer):
         **kwargs,
     ) -> None:
 
-        source_db = create_database(source_table.conn_id, source_table)
-        dest_db = create_database(destination_table.conn_id, destination_table)
-        sql = kwargs.pop('sql', self._get_sql(source_table, source_db, session))
+        self.source_db: BaseDatabase = create_database(source_table.conn_id)
+        self.dest_db: BaseDatabase = create_database(destination_table.conn_id)
+        sql: str = kwargs.pop('sql', self._get_sql(source_table, self.source_db, session))
 
         task_id = kwargs.pop('task_id', f'transfer-{source_table.name}')
         super().__init__(task_id=task_id,
                          sql=sql,
-                         destination_table=dest_db.get_table_qualified_name(destination_table),
+                         destination_table=self.dest_db.get_table_qualified_name(destination_table),
                          source_conn_id=source_table.conn_id,
                          destination_conn_id=destination_table.conn_id,
                          **kwargs)
 
         self.source: BaseTable = source_table
-        self.source_table: str = source_db.get_table_qualified_name(self.source)
+        self.source_table: str = self.source_db.get_table_qualified_name(self.source)
         self.destination: BaseTable = destination_table
         # self.destination_table is set by super().__init__()
         self.session: ETLSession = session
@@ -71,15 +69,17 @@ class TableTransfer(GenericTransfer):
     def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
 
+        # Check whether a template SQL exists for given table under dags\templates\<dag_id>
         if (sql_file := get_template_file(table.name, '.sql')):
             self.log.info(f'Using template file {sql_file}')
             return sql_file
 
+        # Nope, load an SQL from package resources substituting template fields manually
+        # SQL file names are fixed according to whether we do run under ETL session or not
         full_name = db.get_table_qualified_name(table) + (suffix or '')
-        if session:
-            return 'select {{ti.xcom_pull(key="session").session_id}} as session_id, t.* from ' + full_name + ' t'
-
-        return 'select * from ' + full_name
+        template_name = 'table_transfer_nosess.sql' if not session else 'table_transfer_sess.sql'
+        template = get_predefined_template(template_name)
+        return template.render(source_table=full_name)
 
     def _pre_execute(self, context: Context):
         """ Do all checks before execution """
@@ -214,6 +214,114 @@ class OdsTableTransfer(ChangedTableTransfer):
         _save_data(dfm, pd.Timestamp.utcnow(), pd.NaT, 'modified')
         _save_data(dfd, pd.Timestamp.utcnow(), pd.Timestamp.utcnow(), 'deleted')
 
+class ActualsTableTransfer(OdsTableTransfer):
+    """
+    Table transfer operator to be used within `transfer_actuals_table` function.
+    """
+
+    def __init__(
+        self,
+        *,
+        source_table: BaseTable,
+        destination_table: BaseTable,
+        session: ETLSession | None = None,
+        as_ods: bool = False,
+        **kwargs,
+    ) -> None:
+        super().__init__(source_table=source_table, destination_table=destination_table, session=session, **kwargs)
+        self.as_ods = as_ods
+
+    def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
+        """ Internal - get a sql statement or template for given table """
+
+        # If an SQL template is defined for given table, wrap it as a subquery,
+        # so resulting query would be like `select * from (select * from ...)`
+        full_name = db.get_table_qualified_name(table)
+        if (sql := get_template(table.name, '.sql', fail_if_not_found=False)):
+            full_name = f'({sql})'
+
+        # Get template SQL from package resources
+        # The template defines `select` query which takes data from 
+        # source actual data view (<source_table>_a) limited 
+        # for successfull sessions with the same period as this operator has
+        template = get_predefined_template('table_delta_select.sql')
+        return template.render(source_table=full_name + '_a')
+
+    def execute(self, context: Context):
+        """ Execute operator """
+        if self.as_ods:
+            self.log.info('ODS-like transfer mode selected')
+            return super().execute(context)
+
+        # Establish session
+        session = ensure_session(self.session, context)
+
+        # Get the hooks (needed to setup the transfer)
+        src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
+        dest: DbApiHook = DbApiHook.get_hook(self.destination_conn_id)
+
+        # Check whether the hooks point to the same database
+        same_db = is_same_database_uri(src.get_uri(), dest.get_uri())
+
+        # Load source and target table structures using SQL alchemy
+        with src.get_sqlalchemy_engine().connect() as src_conn, dest.get_sqlalchemy_engine().connect() as dest_conn:
+            src_meta = SqlaMetadata(src_conn, schema=self.source.metadata.schema if self.source.metadata else None)
+            src_meta.reflect(only=[self.source.name])
+            src_sqla_table = src_meta.tables[self.source_table]
+
+            dest_meta = SqlaMetadata(dest_conn, schema=self.destination.metadata.schema if self.destination.metadata else None)
+            dest_meta.reflect(only=[self.destination.name])
+            dest_sqla_table = dest_meta.tables[self.destination_table]
+
+        # Build a source-to-target column mapping
+        col_map = {}
+        id_cols = []
+        for src_col in src_sqla_table.columns:
+            if (dest_col := dest_sqla_table.columns.get(src_col.name)) is None:
+                self.log.warning(f'Column {src_col.name} does not exist in {self.destination_table} table, skipping')
+            else:
+                # If a column is PK, store it to use in `on conflict` statement part
+                col_map[src_col.name] = dest_col.name
+                if dest_col.primary_key:
+                    id_cols.append(dest_col.name)
+
+        # Check there are any ID columns on target. If not - fall back to unique key (but its' existence is not verified)
+        if not id_cols:
+            uk_name = f'{self.destination_table}_uk'
+            self.log.warning(f'Could not detect primary key on {self.destination_table}, using unique key {uk_name}')
+            id_cols.append(uk_name)
+
+        # Upload source data to temporary table
+        temp_table = Table(metadata=self.destination.metadata, temp=True)
+        if same_db:
+            # Source and destination tables are in the same database, use `insert` query
+            # Query modifier is required to set proper session_id (source table already contains this column)
+            self.log.info(f'Source and destination tables are in the same database, transfer via {self.sql}')
+            qm = None if not session else \
+                QueryModifier(post_queries=[f'update {self.dest_db.get_table_qualified_name(temp_table)} set session_id={session.session_id}'])
+            self.dest_db.create_table_from_select_statement(self.sql, temp_table, query_modifier=qm)
+        else:
+            # Source and destination tables are in different databases
+            self.log.info(f'Source and destination tables are in different databases, in-memory transfer via {self.sql}')
+            df = src.get_pandas_df(self.sql)
+            if session:
+                df['session_id'] = session.session_id
+            self.dest_db.load_pandas_dataframe_to_table(df, temp_table, if_exists='replace')
+
+        # Merge temporary and target tables
+        try:
+            self.log.info(f'Merging from {temp_table.name} to {self.destination_table}')
+            self.dest_db.merge_table(
+                source_table=temp_table,
+                target_table=self.destination,
+                source_to_target_columns_map=col_map,
+                target_conflict_columns=id_cols,
+                if_conflicts='update',
+            )
+        finally:
+            self.dest_db.drop_table(temp_table)
+
+
 class TimedTableTransfer(TableTransfer):
     """
     Table transfer operator to be used within `update_timed_dict` function.
@@ -310,7 +418,7 @@ def load_table(
         conn_id:    Airflow connection ID to underlying database. If not specified,
             and `Table` object is passed it, its `conn_id` attribute will be used.
         session:    `astro_extras.operators.session.ETLSession` object. 
-            Used only to link up to the `open_session` operator.
+            Used only to link up to the `open_SESSIONion` operator.
         sql:    Custom SQL to load data, used only if no SQL template found.
             If neither SQL nor template is given, all table data will be loaded.
 
@@ -380,10 +488,70 @@ def declare_tables(
         conn_id: str | None = None,
         schema: str | None = None,
         database: str | None = None,
-) -> List[BaseTable]:
+) -> Iterable[BaseTable]:
     """ Convert list of string table names to list of `Table` objects """
 
     return [ensure_table(t, conn_id, schema, database) for t in table_names]
+
+def _do_transfer_table(
+        op_cls: Type[GenericTransfer],
+        source: str | BaseTable,
+        target: str | BaseTable | None,
+        source_conn_id: str | None,
+        destination_conn_id: str | None,
+        session: XComArg | ETLSession | None,
+        **kwargs) -> XComArg:
+    """ Internal - table transfer implementation """
+
+    source_table = ensure_table(source, source_conn_id)
+    dest_table = ensure_table(target or source_table, destination_conn_id)
+
+    op = op_cls(
+        source_table=source_table,
+        destination_table=dest_table,
+        session=session,
+        **kwargs_with_datasets(kwargs=kwargs, 
+                               input_datasets=source_table, 
+                               output_datasets=dest_table)
+    )
+    return XComArg(op)
+
+def _do_transfer_tables(
+        op_cls: Type[GenericTransfer],
+        source_tables: Iterable[str | Table],
+        target_tables: Iterable[str | Table] | None,
+        source_conn_id: str | None,
+        destination_conn_id: str | None,
+        group_id: str | None,
+        num_parallel: int,
+        session: XComArg | ETLSession | None,
+        **kwargs) -> TaskGroup:
+                 
+    """ Internal - transfer multiple tables """
+
+    if target_tables and len(target_tables) != len(source_tables):
+        raise AirflowFailException(f'Source and target tables list size must be equal')
+
+    target_tables = target_tables or source_tables
+
+    with TaskGroup(group_id, add_suffix_on_collision=True, prefix_group_id=False) as tg:
+        ops_list = []
+        for (source, target) in zip(source_tables, target_tables):
+            source_table = ensure_table(source, source_conn_id)
+            dest_table = ensure_table(target, destination_conn_id) or source_table
+            op = op_cls(
+                source_table=source_table,
+                destination_table=dest_table,
+                session=session,
+                **kwargs_with_datasets(
+                    kwargs=kwargs, 
+                    input_datasets=source_table, 
+                    output_datasets=dest_table))
+            ops_list.append(op)
+
+        schedule_ops(ops_list, num_parallel)
+
+    return tg
 
 def transfer_table(
         source: str | BaseTable,
@@ -454,7 +622,7 @@ def transfer_table(
             by runnning `destination_sql`. By default, this query will be built using 
             `<destination_table>_a` view to get actual data.
 
-            Deprecated since 0.0.13, use `transfer_changed_table` instead.
+            Deprecated since 0.1.1, use `transfer_changed_table` instead.
 
         kwargs:     Any parameters passed to underlying operator (e.g. `preoperator`, ...)
 
@@ -477,26 +645,22 @@ def transfer_table(
         >>>     transfer_table('public.table_data', session=sess)
 
     """
-    source_table = ensure_table(source, source_conn_id)
-    dest_table = ensure_table(target or source_table, destination_conn_id)
-
     if changes_only is not None:
         warnings.warn('`changes_only` is deprecated since 0.0.13, use `transfer_changed_table()` instead')
 
     op_cls = TableTransfer if not changes_only else ChangedTableTransfer
-    op = op_cls(
-        source_table=source_table,
-        destination_table=dest_table,
+    return _do_transfer_table(
+        op_cls=op_cls,
+        source=source,
+        target=target,
+        source_conn_id=source_conn_id,
+        destination_conn_id=destination_conn_id,
         session=session,
-        **kwargs_with_datasets(kwargs=kwargs, 
-                               input_datasets=source_table, 
-                               output_datasets=dest_table)
-    )
-    return XComArg(op)
+        **kwargs)
 
 def transfer_tables(
-        source_tables: List[str | Table],
-        target_tables: List[str | Table] | None = None,
+        source_tables: Iterable[str | Table],
+        target_tables: Iterable[str | Table] | None = None,
         source_conn_id: str | None = None,
         destination_conn_id: str | None = None,
         group_id: str | None = None,
@@ -512,39 +676,21 @@ def transfer_tables(
 
     See `transfer_table` for more information.
     """
-
-    if target_tables and len(target_tables) != len(source_tables):
-        raise AirflowFailException(f'Source and target tables list size must be equal')
-
-    target_tables = target_tables or source_tables
-
     if changes_only is not None:
-        warnings.warn('`changes_only` is deprecated since 0.0.13, use `transfer_changed_tables()` instead')
+        warnings.warn('`changes_only` is deprecated since 0.1.1, use `transfer_changed_tables()` instead')
 
     op_cls = TableTransfer if not changes_only else ChangedTableTransfer
-
-    with TaskGroup(
-        group_id or 'transfer-tables', 
-        add_suffix_on_collision=True,
-        prefix_group_id=False) as tg:
-
-        ops_list = []
-        for (source, target) in zip(source_tables, target_tables):
-            source_table = ensure_table(source, source_conn_id)
-            dest_table = ensure_table(target, destination_conn_id) or source_table
-            op = op_cls(
-                source_table=source_table,
-                destination_table=dest_table,
-                session=session,
-                **kwargs_with_datasets(
-                    kwargs=kwargs, 
-                    input_datasets=source_table, 
-                    output_datasets=dest_table))
-            ops_list.append(op)
-
-        schedule_ops(ops_list, num_parallel)
-
-    return tg
+    return _do_transfer_tables(
+        op_cls=op_cls,
+        source_tables=source_tables,
+        target_tables=target_tables,
+        source_conn_id=source_conn_id,
+        destination_conn_id=destination_conn_id,
+        group_id=group_id or 'transfer-tables',
+        num_parallel=num_parallel,
+        session=session,
+        **kwargs
+    )
 
 def transfer_changed_table(
         source: str | BaseTable,
@@ -571,22 +717,18 @@ def transfer_changed_table(
         `XComArg` object
 
     """
-    source_table = ensure_table(source, source_conn_id)
-    dest_table = ensure_table(target or source_table, destination_conn_id)
-
-    op = ChangedTableTransfer(
-        source_table=source_table,
-        destination_table=dest_table,
+    return _do_transfer_table(
+        op_cls=ChangedTableTransfer,
+        source=source,
+        target=target,
+        source_conn_id=source_conn_id,
+        destination_conn_id=destination_conn_id,
         session=session,
-        **kwargs_with_datasets(kwargs=kwargs, 
-                               input_datasets=source_table, 
-                               output_datasets=dest_table)
-    )
-    return XComArg(op)
+        **kwargs)
 
 def transfer_changed_tables(
-        source_tables: List[str | Table],
-        target_tables: List[str | Table] | None = None,
+        source_tables: Iterable[str | Table],
+        target_tables: Iterable[str | Table] | None = None,
         source_conn_id: str | None = None,
         destination_conn_id: str | None = None,
         group_id: str | None = None,
@@ -601,34 +743,17 @@ def transfer_changed_tables(
 
     See `transfer_changed_table` for more information.
     """
-
-    if target_tables and len(target_tables) != len(source_tables):
-        raise AirflowFailException(f'Source and target tables list size must be equal')
-
-    target_tables = target_tables or source_tables
-
-    with TaskGroup(
-        group_id or 'transfer-tables', 
-        add_suffix_on_collision=True,
-        prefix_group_id=False) as tg:
-
-        ops_list = []
-        for (source, target) in zip(source_tables, target_tables):
-            source_table = ensure_table(source, source_conn_id)
-            dest_table = ensure_table(target, destination_conn_id) or source_table
-            op = ChangedTableTransfer(
-                source_table=source_table,
-                destination_table=dest_table,
-                session=session,
-                **kwargs_with_datasets(
-                    kwargs=kwargs, 
-                    input_datasets=source_table, 
-                    output_datasets=dest_table))
-            ops_list.append(op)
-
-        schedule_ops(ops_list, num_parallel)
-
-    return tg
+    return _do_transfer_tables(
+        op_cls=OdsTableTransfer,
+        source_tables=source_tables,
+        target_tables=target_tables,
+        source_conn_id=source_conn_id,
+        destination_conn_id=destination_conn_id,
+        group_id=group_id or 'transfer-dict',
+        num_parallel=num_parallel,
+        session=session,
+        **kwargs
+    )
 
 def transfer_ods_table(
         source: str | BaseTable,
@@ -644,22 +769,18 @@ def transfer_ods_table(
         `XComArg` object
 
     """
-    source_table = ensure_table(source, source_conn_id)
-    dest_table = ensure_table(target or source_table, destination_conn_id)
-
-    op = OdsTableTransfer(
-        source_table=source_table,
-        destination_table=dest_table,
+    return _do_transfer_table(
+        op_cls=OdsTableTransfer,
+        source=source,
+        target=target,
+        source_conn_id=source_conn_id,
+        destination_conn_id=destination_conn_id,
         session=session,
-        **kwargs_with_datasets(kwargs=kwargs, 
-                               input_datasets=source_table, 
-                               output_datasets=dest_table)
-    )
-    return XComArg(op)
+        **kwargs)
 
 def transfer_ods_tables(
-        source_tables: List[str | Table],
-        target_tables: List[str | Table] | None = None,
+        source_tables: Iterable[str | Table],
+        target_tables: Iterable[str | Table] | None = None,
         source_conn_id: str | None = None,
         destination_conn_id: str | None = None,
         group_id: str | None = None,
@@ -674,34 +795,68 @@ def transfer_ods_tables(
 
     See `transfer_ods_table` for more information.
     """
+    return _do_transfer_tables(
+        op_cls=OdsTableTransfer,
+        source_tables=source_tables,
+        target_tables=target_tables,
+        source_conn_id=source_conn_id,
+        destination_conn_id=destination_conn_id,
+        group_id=group_id or 'transfer-ods-tables',
+        num_parallel=num_parallel,
+        session=session,
+        **kwargs
+    )
 
-    if target_tables and len(target_tables) != len(source_tables):
-        raise AirflowFailException(f'Source and target tables list size must be equal')
+def transfer_actuals_table(
+        source: str | BaseTable,
+        target: str | BaseTable | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        session: XComArg | ETLSession = None,
+        **kwargs) -> XComArg:
+    
+    """ Transfer table from stage to actuals.
 
-    target_tables = target_tables or source_tables
+    Returns:
+        `XComArg` object
 
-    with TaskGroup(
-        group_id or 'transfer-tables', 
-        add_suffix_on_collision=True,
-        prefix_group_id=False) as tg:
+    """
+    assert session is not None, 'Transfer to actuals requires ETL session'
 
-        ops_list = []
-        for (source, target) in zip(source_tables, target_tables):
-            source_table = ensure_table(source, source_conn_id)
-            dest_table = ensure_table(target, destination_conn_id) or source_table
-            op = OdsTableTransfer(
-                source_table=source_table,
-                destination_table=dest_table,
-                session=session,
-                **kwargs_with_datasets(
-                    kwargs=kwargs, 
-                    input_datasets=source_table, 
-                    output_datasets=dest_table))
-            ops_list.append(op)
+    return _do_transfer_table(
+        op_cls=ActualsTableTransfer,
+        source=source,
+        target=target,
+        source_conn_id=source_conn_id,
+        destination_conn_id=destination_conn_id,
+        session=session,
+        **kwargs)
 
-        schedule_ops(ops_list, num_parallel)
+def transfer_actuals_tables(
+        source_tables: Iterable[str | Table],
+        target_tables: Iterable[str | Table] | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        session: XComArg | ETLSession | None = None,
+        **kwargs) -> TaskGroup:
 
-    return tg
+    """ Transfer multiple tables from stage to actuals.
+    """
+    assert session is not None, 'Transfer to actuals requires ETL session'
+
+    return _do_transfer_tables(
+        op_cls=ActualsTableTransfer,
+        source_tables=source_tables,
+        target_tables=target_tables,
+        source_conn_id=source_conn_id,
+        destination_conn_id=destination_conn_id,
+        group_id=group_id or 'transfer-actuals',
+        num_parallel=num_parallel,
+        session=session,
+        **kwargs
+    )
 
 def compare_table(
         source: str | BaseTable,
@@ -750,8 +905,8 @@ def compare_table(
     return XComArg(op)
 
 def compare_tables(
-        source_tables: List[str | Table],
-        target_tables: List[str | Table] | None = None,
+        source_tables: Iterable[str | Table],
+        target_tables: Iterable[str | Table] | None = None,
         source_conn_id: str | None = None,
         destination_conn_id: str | None = None,
         group_id: str | None = None,
@@ -806,8 +961,8 @@ def update_timed_table(
     return XComArg(op)
 
 def update_timed_tables(
-        source_tables: List[str | Table],
-        target_tables: List[str | Table] | None = None,
+        source_tables: Iterable[str | Table],
+        target_tables: Iterable[str | Table] | None = None,
         source_conn_id: str | None = None,
         destination_conn_id: str | None = None,
         group_id: str | None = None,
@@ -838,3 +993,4 @@ def update_timed_tables(
             ops_list.append(op)
         schedule_ops(ops_list, num_parallel)
     return tg
+

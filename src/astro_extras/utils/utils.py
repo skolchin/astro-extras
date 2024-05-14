@@ -3,7 +3,8 @@
 
 """ Misc utility functions """
 
-from itertools import pairwise, groupby
+from urllib.parse import urlparse
+from itertools import pairwise
 from airflow.models import BaseOperator
 from astro.sql.table import BaseTable, Table, Metadata
 from typing import Union, Tuple, Optional, List, Iterable
@@ -62,3 +63,12 @@ def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> List[Ba
             a.set_downstream(b)
 
     return [x[-1] for x in splits]
+
+def is_same_database_uri(uri_1: str, uri_2: str) -> bool:
+    """ Compares two database URIs abd returns `True` if they point to the same database.
+    `Schema` part of URI (usually encoded as `schema=xxx` query string) is ignored. 
+    Note that all URI parts are compared only lexigraphically.
+    """
+    p1 = urlparse(uri_1)
+    p2 = urlparse(uri_2)
+    return p1.scheme == p2.scheme and p1.netloc == p2.netloc and p1.username == p2.username and p1.path == p2.path

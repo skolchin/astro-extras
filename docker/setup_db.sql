@@ -65,9 +65,13 @@ from generate_series(1, 1000);
 
 --
 -- Target DB setup
---
+-- Target DB contains multiple schemas: 
+--  stage for source data snapshots
+--  actuals which merges snapshots to actual source data
+--  dwh which is supposed to contain some data marts and cubes
+
 create database target_db;
-comment on database target_db is 'Target data (dwh)';
+comment on database target_db is 'Target data';
 
 \c target_db
 
@@ -83,6 +87,7 @@ create table public.sessions(
 );
 comment on table public.sessions is 'Sessions';
 
+-- stage
 create schema stage;
 comment on schema stage is 'Staging area';
 
@@ -119,9 +124,30 @@ create view stage.table_data_a as
 
 comment on view stage.table_data_a is 'Actual staged data';
 
+-- actuals
+create schema actuals;
+comment on schema actuals is 'Actuals area';
 
+create table actuals.types(
+    type_id int not null primary key,
+    session_id int not null,
+    type_name text not null
+);
+comment on table actuals.types is 'actuals types table';
+
+create table actuals.table_data(
+    id int not null primary key,
+    session_id int not null,
+    type_id int not null references actuals.types(type_id),
+    comments text not null,
+    created_ts timestamp not null default current_timestamp,
+    modified_ts timestamp null
+);
+comment on table actuals.table_data is 'actuals data';
+
+-- dwh
 create schema dwh;
-comment on schema dwh is 'Processed data area';
+comment on schema dwh is 'DWH data area';
 
 create table dwh.dim_types(
     type_id serial not null primary key,

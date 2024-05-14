@@ -17,7 +17,7 @@ with DAG(
     tags=['demo', 'astro-extras'],
 ) as dag:
 
-    ora_table = Table('types', conn_id='oracle_db')
+    ora_table = Table('types', conn_id='source_db')
     psg_table = Table('types', conn_id='target_db', metadata=Metadata(schema='stage'))
 
     compare_tables([ora_table], [psg_table])

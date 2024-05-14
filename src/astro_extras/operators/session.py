@@ -6,7 +6,7 @@
 import re
 from datetime import datetime, timedelta
 from dateutil.parser import isoparse
-
+from sqlalchemy import text
 from airflow.models import DAG, BaseOperator
 from airflow.models.xcom_arg import XComArg
 from airflow.models.dag import DagContext
@@ -14,15 +14,15 @@ from airflow.operators.python import get_current_context
 from airflow.utils.context import Context
 from airflow.utils.state import TaskInstanceState
 from airflow.utils.trigger_rule import TriggerRule
+from airflow.providers.common.sql.hooks.sql import DbApiHook
 from airflow.exceptions import AirflowException, AirflowFailException
 from airflow.settings import TIMEZONE
-
 from attr import define, field
 from astro import sql as aql
-from astro.sql.operators.raw_sql import RawSQLOperator
 from typing import Optional, Union, Any, Tuple, cast
 
 from ..utils.datetime_local import datetime_to_tz
+from ..utils.template import get_predefined_template
 
 @define(slots=False)
 class ETLSession:
@@ -129,22 +129,19 @@ class OpenSessionOperator(BaseOperator):
         self.session: ETLSession = None
 
     def _new_session(self, period_start: str, period_end: str, context: Context) -> int:
-        # TODO: use database-neutral statement with SQLA
-        sql = f"""insert into public.sessions(source, target, period, started, status, run_id) 
-            values('{self.source_conn_id}','{self.destination_conn_id}','{{ {period_start}, {period_end} }}', 
-            '{datetime.now()}','running','{context['run_id']}') returning session_id"""
-
-        op = RawSQLOperator(
-            task_id=self.task_id,
-            python_callable=lambda : sql,
-            conn_id=self.session_conn_id,
-            handler=lambda result: result.fetchone(),
-            response_size=1)
-        
-        return op.execute(context)[0]
+        template = get_predefined_template('session_open.sql')
+        sql = template.render(
+            source_conn_id=self.source_conn_id,
+            destination_conn_id=self.destination_conn_id,
+            period_str=f'{{ "{period_start}", "{period_end}" }}',
+            started=datetime.now().isoformat(),
+            run_id=context['run_id'],
+        )
+        hook: DbApiHook = DbApiHook.get_hook(self.session_conn_id)
+        result = hook.get_first(sql)
+        return result[0]
 
     def execute(self, context: Context):
-
         period_start, period_end = get_session_period(context)
         session_id = self._new_session(period_start, period_end, context)
         self.log.info(f'New session {session_id} for period [{period_start},{period_end}] started')
@@ -181,14 +178,14 @@ class CloseSessionOperator(BaseOperator):
         status = 'error' if failed_tasks else 'success'
 
         # TBD: use of database-neutral statement
-        sql = f"update public.sessions set finished=current_timestamp, status='{status}' " \
-                   f"where session_id={self.session.session_id}"
-        op = RawSQLOperator(
-            task_id=self.task_id,
-            python_callable=lambda : sql,
-            conn_id=self.session.session_conn_id,
-            response_size=1)
-        op.execute(context)
+        template = get_predefined_template('session_close.sql')
+        sql = template.render(
+            session_id=self.session.session_id,
+            status=status,
+            finished=datetime.now().isoformat()
+        )
+        hook: DbApiHook = DbApiHook.get_hook(self.session.session_conn_id)
+        hook.run(sql)
         self.log.info(f'Session {self.session.session_id} closed with status {status}')
 
         if status == 'error':
