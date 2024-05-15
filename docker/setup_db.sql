@@ -37,7 +37,7 @@ values
 -- Source DB setup
 --
 create database source_db;
-comment on database source_db is 'Source data';
+comment on database source_db is 'Source database';
 
 \c source_db
 
@@ -45,7 +45,7 @@ create table public.types(
     type_id serial not null primary key,
     type_name text not null
 );
-comment on table public.types is 'Source data type dictionary table';
+comment on table public.types is 'Type dictionary table';
 
 create table public.table_data(
     id serial not null primary key,
@@ -54,12 +54,25 @@ create table public.table_data(
     created_ts timestamp not null default current_timestamp,
     modified_ts timestamp null
 );
-comment on table public.table_data is 'Source data table';
+comment on table public.table_data is 'Data table for standard style transfer';
+
+create table public.ods_data(
+    id serial not null primary key,
+    type_id int not null references types(type_id),
+    comments text not null,
+    created_ts timestamp not null default current_timestamp,
+    modified_ts timestamp null
+);
+comment on table public.ods_data is 'Data table for ODS-style transfer';
 
 insert into public.types(type_id, type_name)
 values (1, 'Type 1'), (2, 'Type 2'), (3, 'Type 3');
 
 insert into public.table_data(type_id, comments, created_ts)
+select floor(random()*3) + 1, md5(random()::text), current_timestamp - '1 day'::interval
+from generate_series(1, 1000);
+
+insert into public.ods_data(type_id, comments, created_ts)
 select floor(random()*3) + 1, md5(random()::text), current_timestamp - '1 day'::interval
 from generate_series(1, 1000);
 
@@ -71,7 +84,7 @@ from generate_series(1, 1000);
 --  dwh which is supposed to contain some data marts and cubes
 
 create database target_db;
-comment on database target_db is 'Target data';
+comment on database target_db is 'Target database';
 
 \c target_db
 
@@ -104,7 +117,7 @@ create view stage.types_a as
     inner join public.sessions s on s.session_id = t.session_id and s.status = 'success'
     order by t.type_id, t.session_id desc;
 
-comment on view stage.types_a is 'Actual data from staged types table';
+comment on view stage.types_a is 'Actual data view for stage.types';
 
 create table stage.table_data(
     session_id int not null references public.sessions(session_id),
@@ -114,7 +127,7 @@ create table stage.table_data(
     created_ts timestamp not null default current_timestamp,
     modified_ts timestamp null
 );
-comment on table stage.table_data is 'Staged data';
+comment on table stage.table_data is 'Staged data table';
 
 create view stage.table_data_a as
     select distinct on (t.id) t.*
@@ -122,7 +135,29 @@ create view stage.table_data_a as
     inner join public.sessions s on s.session_id = t.session_id and s.status = 'success'
     order by t.id, t.session_id desc;
 
-comment on view stage.table_data_a is 'Actual staged data';
+comment on view stage.table_data_a is 'Actual data view for stage.table_data';
+
+create table stage.ods_data (
+    session_id int not null references public.sessions(session_id),
+    _modified timestamp,
+    _deleted timestamp,
+    id int not null,
+    type_id int not null,
+    comments text not null,
+    created_ts timestamp not null default current_timestamp,
+    modified_ts timestamp null
+);
+comment on table stage.ods_data is 'Staged ODS data table';
+
+create view stage.ods_data_a as
+    with d as (
+        select distinct on (r.id) r.id, r.session_id, r._deleted from public.sessions s
+        inner join stage.ods_data r on r.session_id = s.session_id and s.status = 'success'
+        order by r.id, r.session_id desc
+    )
+    select t.* from stage.ods_data t inner join d on t.id = d.id and t.session_id = d.session_id and d._deleted is null;
+
+comment on view stage.ods_data_a is 'Actual data view for stage.ods_data';
 
 -- actuals
 create schema actuals;
@@ -133,7 +168,7 @@ create table actuals.types(
     session_id int not null,
     type_name text not null
 );
-comment on table actuals.types is 'actuals types table';
+comment on table actuals.types is 'Actuals types table';
 
 create table actuals.table_data(
     id int not null primary key,
@@ -143,7 +178,23 @@ create table actuals.table_data(
     created_ts timestamp not null default current_timestamp,
     modified_ts timestamp null
 );
-comment on table actuals.table_data is 'actuals data';
+comment on table actuals.table_data is 'Actuals data table';
+
+create table actuals.ods_data (
+    id int not null primary key,
+    session_id int not null references public.sessions(session_id),
+    _modified timestamp,
+    _deleted timestamp,
+    type_id int not null references actuals.types(type_id),
+    comments text not null,
+    created_ts timestamp not null default current_timestamp,
+    modified_ts timestamp null
+);
+comment on table actuals.ods_data is 'Actuals ODS data table';
+
+create view actuals.ods_data_a as select * from actuals.ods_data where "_deleted" is null order by id;
+
+comment on view actuals.ods_data is 'Actual data view for Actuals ODS data table';
 
 -- dwh
 create schema dwh;

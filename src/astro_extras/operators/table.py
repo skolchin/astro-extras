@@ -36,7 +36,7 @@ class TableTransfer(GenericTransfer):
     template_fields = ("sql", "preoperator", "source_table", "destination_table")
     template_ext = (".sql", ".hql" )
     template_fields_renderers = {"sql": "sql", "preoperator": "sql"}
-    ui_color = "#b0f07c"
+    ui_color = "#b4f07c"
 
     def __init__(
         self,
@@ -121,7 +121,7 @@ class ChangedTableTransfer(TableTransfer):
 
     template_fields = ("sql", "preoperator", "source_table", "destination_table", "destination_sql")
     template_fields_renderers = {"sql": "sql", "preoperator": "sql", "destination_sql": "sql"}
-    ui_color = "#8cbf62"
+    ui_color = "#95f07c"
 
     def __init__(
         self,
@@ -146,7 +146,6 @@ class ChangedTableTransfer(TableTransfer):
         """ Internal - compare source and target dictionaries """
 
         logger = logger or self.log
-
         src = DbApiHook.get_hook(self.source_conn_id)
         dest = DbApiHook.get_hook(self.destination_conn_id)
 
@@ -163,30 +162,16 @@ class ChangedTableTransfer(TableTransfer):
         if not self._compare_datasets(stop_on_first_diff=True):
             return super().execute(context)
 
-class CompareTableOperator(ChangedTableTransfer):
-    """
-    Table comparsion operator to be used within `compare_table` function.
-    Compares source and target data and prints results to log.
-    """
-    ui_color = "#64bf62"
-
-    def execute(self, context: Context):
-        """ Execute operator """
-        logger = logging.getLogger(f'compare_tables_logger')
-        logger.setLevel(logging.DEBUG)
-        if not self._compare_datasets(stop_on_first_diff=True, logger=logger):
-            raise AirflowFailException(f'Differences detected')
-
 class OdsTableTransfer(ChangedTableTransfer):
     """
-    Table transfer operator to be used within `transfer_ods_table` function.
+    Table transfer operator to be used within `transfer_ods_table` function
+    to transfer data from source to ODS-style target.
     
-    Compares source and target data and transfers delta if any changes detected.
-    Requiures `xxx_a` view to exist on target. Also, target table must have
+    Requiures `xxx_a` view to exist on target. Target table must have
     `_modified' and `_deleted` attributes of `timestamp with time zone` type.
     """
 
-    ui_color = "#608a3e"
+    ui_color = "#78f07c"
 
     def execute(self, context: Context):
         """ Execute operator """
@@ -217,7 +202,9 @@ class OdsTableTransfer(ChangedTableTransfer):
 class ActualsTableTransfer(OdsTableTransfer):
     """
     Table transfer operator to be used within `transfer_actuals_table` function.
+    Requiures `xxx_a` view to exist on source.
     """
+    ui_color = "#5af07d"
 
     def __init__(
         self,
@@ -244,24 +231,18 @@ class ActualsTableTransfer(OdsTableTransfer):
         # The template defines `select` query which takes data from 
         # source actual data view (<source_table>_a) limited 
         # for successfull sessions with the same period as this operator has
-        template = get_predefined_template('table_delta_select.sql')
-        return template.render(source_table=full_name + '_a')
+        template = get_predefined_template('table_actuals_select.sql')
+        return template.render(source_table=full_name)
 
     def execute(self, context: Context):
         """ Execute operator """
-        if self.as_ods:
-            self.log.info('ODS-like transfer mode selected')
-            return super().execute(context)
 
         # Establish session
         session = ensure_session(self.session, context)
 
-        # Get the hooks (needed to setup the transfer)
+        # Get the hooks to setup the transfer
         src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
         dest: DbApiHook = DbApiHook.get_hook(self.destination_conn_id)
-
-        # Check whether the hooks point to the same database
-        same_db = is_same_database_uri(src.get_uri(), dest.get_uri())
 
         # Load source and target table structures using SQL alchemy
         with src.get_sqlalchemy_engine().connect() as src_conn, dest.get_sqlalchemy_engine().connect() as dest_conn:
@@ -272,6 +253,16 @@ class ActualsTableTransfer(OdsTableTransfer):
             dest_meta = SqlaMetadata(dest_conn, schema=self.destination.metadata.schema if self.destination.metadata else None)
             dest_meta.reflect(only=[self.destination.name])
             dest_sqla_table = dest_meta.tables[self.destination_table]
+
+            if self.as_ods:
+                # Check source and target meet the ODS requirements
+                if '_deleted' not in src_sqla_table.columns:
+                    raise AirflowFailException(f'Source table {self.source_table} does not have `_deleted` column required for ODS-style transfer')
+                if '_deleted' not in dest_sqla_table.columns:
+                    raise AirflowFailException(f'Target table {self.destination_table} does not have `_deleted` column required for ODS-style transfer')
+
+        # Check whether the hooks point to the same database
+        same_db = is_same_database_uri(src.get_uri(), dest.get_uri())
 
         # Build a source-to-target column mapping
         col_map = {}
@@ -285,28 +276,35 @@ class ActualsTableTransfer(OdsTableTransfer):
                 if dest_col.primary_key:
                     id_cols.append(dest_col.name)
 
-        # Check there are any ID columns on target. If not - fall back to unique key (but its' existence is not verified)
+        # Check there are any ID columns on target
         if not id_cols:
-            uk_name = f'{self.destination_table}_uk'
-            self.log.warning(f'Could not detect primary key on {self.destination_table}, using unique key {uk_name}')
-            id_cols.append(uk_name)
+            raise AirflowFailException(f'Could not detect primary key on {self.destination_table}')
+
+        # Wrap data selection query into `select distinct on` in order to avoid having multiple IDs error
+        id_cols_str = ",".join(id_cols)
+        sql = f'select distinct on ({id_cols_str}) * from ({self.sql}) q order by {id_cols_str}, session_id desc'
+        self.log.info(f'Source extraction SQL:\n{sql}')
 
         # Upload source data to temporary table
         temp_table = Table(metadata=self.destination.metadata, temp=True)
         if same_db:
             # Source and destination tables are in the same database, use `insert` query
             # Query modifier is required to set proper session_id (source table already contains this column)
-            self.log.info(f'Source and destination tables are in the same database, transfer via {self.sql}')
+            self.log.info(f'Source and destination tables are in the same database')
             qm = None if not session else \
                 QueryModifier(post_queries=[f'update {self.dest_db.get_table_qualified_name(temp_table)} set session_id={session.session_id}'])
-            self.dest_db.create_table_from_select_statement(self.sql, temp_table, query_modifier=qm)
+            self.dest_db.create_table_from_select_statement(sql, temp_table, query_modifier=qm)
         else:
             # Source and destination tables are in different databases
-            self.log.info(f'Source and destination tables are in different databases, in-memory transfer via {self.sql}')
-            df = src.get_pandas_df(self.sql)
+            self.log.info(f'Source and destination tables are in different databases, using in-memory transfer')
+            df = src.get_pandas_df(sql)
             if session:
                 df['session_id'] = session.session_id
             self.dest_db.load_pandas_dataframe_to_table(df, temp_table, if_exists='replace')
+
+        # Count rows
+        row_count = self.dest_db.row_count(temp_table)
+        self.log.info(f'Number of rows selected: {row_count}')
 
         # Merge temporary and target tables
         try:
@@ -331,7 +329,7 @@ class TimedTableTransfer(TableTransfer):
 
     template_fields = ("sql", "preoperator", "source_table", "destination_table", "destination_sql")
     template_fields_renderers = {"sql": "sql", "preoperator": "sql", "destination_sql": "sql"}
-    ui_color = "#597a3d"
+    ui_color = "#3cf07e"
 
     def __init__(
         self,
@@ -362,8 +360,8 @@ class TimedTableTransfer(TableTransfer):
         self._pre_execute(context)
 
         # Get source and target data
-        src = DbApiHook.get_hook(self.source_conn_id)
-        dest = DbApiHook.get_hook(self.destination_conn_id)
+        src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
+        dest: DbApiHook = DbApiHook.get_hook(self.destination_conn_id)
 
         self.log.info(f'Executing: {self.sql}')
         df_src = src.get_pandas_df(self.sql)
@@ -388,6 +386,20 @@ class TimedTableTransfer(TableTransfer):
 
             if df_opening is not None:
                 df_opening.to_sql(dest_table, conn, schema=dest_schema, index=False, if_exists='append')
+
+class CompareTableOperator(ChangedTableTransfer):
+    """
+    Table comparsion operator to be used within `compare_table` function.
+    Compares source and target data and prints results to log.
+    """
+    ui_color = "#64bf62"
+
+    def execute(self, context: Context):
+        """ Execute operator """
+        logger = logging.getLogger(f'compare_tables_logger')
+        logger.setLevel(logging.DEBUG)
+        if not self._compare_datasets(stop_on_first_diff=True, logger=logger):
+            raise AirflowFailException(f'Differences detected')
 
 def load_table(
         table: str | BaseTable,
@@ -700,16 +712,23 @@ def transfer_changed_table(
         session: XComArg | ETLSession | None = None,
         **kwargs) -> XComArg:
     
-    """ Cross-database data transfer.
+    """ Cross-database changed data transfer.
 
-    This function implements cross-database geterogenous data transfer.
+    This function implements cross-database geterogenous data transfer using snap-shotting
+    mechanism, which is then any change is detected on source, whole source data is transferred
+    to target making a new snapshot there.
 
-    The operator runs a templated SQL on source (`sql`) and target (`destination_sql`)
-    and compares results. If there are any differences found among them,
-    it will transfer all the source data the same way as `transfer_table` 
-    creating a new snapshot on the target.
+    In order to detect these changes, it will load both source and target data and compare
+    row count, structure and each and every record.
 
-    `destination_sql` query is pre-built to run on `<destination_table>_a` view to get actual data.
+    This mode could be used to transfer small-sized tables (dictionaries), especially if
+    the table does not contain any change mark.
+
+    The operator uses templated SQLs to retrieve data from source and target tables
+    (`sql` and `destination_sql` respectively). By default, it expects that an
+    "actual data view" named `<destination_table>_a` to exist on target. This view
+    has to return latest target data snapshot (usually related to last successfull ETL session),
+    see example DAGs for more details.
 
     See `transfer_table` for details on arguments.
 
@@ -736,7 +755,7 @@ def transfer_changed_tables(
         session: XComArg | ETLSession | None = None,
         **kwargs) -> TaskGroup:
 
-    """ Transfer multiple tables.
+    """ Transfer multiple changed tables.
 
     Creates an Airflow task group with transfer tasks for each table pair 
     from `source_tables` and `target_tables` lists.
@@ -813,6 +832,7 @@ def transfer_actuals_table(
         source_conn_id: str | None = None,
         destination_conn_id: str | None = None,
         session: XComArg | ETLSession = None,
+        as_ods: bool = False,
         **kwargs) -> XComArg:
     
     """ Transfer table from stage to actuals.
@@ -822,6 +842,7 @@ def transfer_actuals_table(
 
     """
     assert session is not None, 'Transfer to actuals requires ETL session'
+    kwargs['as_ods'] = as_ods
 
     return _do_transfer_table(
         op_cls=ActualsTableTransfer,
@@ -840,11 +861,13 @@ def transfer_actuals_tables(
         group_id: str | None = None,
         num_parallel: int = 1,
         session: XComArg | ETLSession | None = None,
+        as_ods: bool = False,
         **kwargs) -> TaskGroup:
 
     """ Transfer multiple tables from stage to actuals.
     """
     assert session is not None, 'Transfer to actuals requires ETL session'
+    kwargs['as_ods'] = as_ods
 
     return _do_transfer_tables(
         op_cls=ActualsTableTransfer,

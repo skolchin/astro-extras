@@ -112,6 +112,7 @@ class ETLSession:
 
 class OpenSessionOperator(BaseOperator):
     """ Session opening operator. Normally is used within `open_session` function """
+    ui_color = "#82eef0"
 
     def __init__(self,
                  *,
@@ -159,6 +160,7 @@ class OpenSessionOperator(BaseOperator):
 
 class CloseSessionOperator(BaseOperator):
     """ Session closing operator. Normally is used within `close_session` function """
+    ui_color = "#78f0f0"
 
     def __init__(self,
                  *,
@@ -363,13 +365,15 @@ def ensure_session(session: Optional[Union[ETLSession, XComArg]],
     Returns:
         Current ETL session as `ETLSession` class instance
     """
-    if session is None:
-        return None
-    if isinstance(session, ETLSession):
-        return session
-    if isinstance(session, XComArg):
-        return get_current_session(context)
-    raise TypeError(f'Either ETLSession or XComArg expected, {session.__class__.__name__} found')
+    match session:
+        case None:
+            return None
+        case ETLSession():
+            return session
+        case XComArg():
+            return get_current_session(context)
+        case _:
+            raise TypeError(f'Either ETLSession or XComArg expected, {session.__class__.__name__} found')
 
 _TS_REGX = r'\d{4}-([0]\d|1[0-2])-([0-2]\d|3[01])(T\d{2}:\d{2}:\d{2})?'
 _FULL_REGX = r'\[\d{4}-([0]\d|1[0-2])-([0-2]\d|3[01])(T\d{2}:\d{2}:\d{2})?,\s*\d{4}-([0]\d|1[0-2])-([0-2]\d|3[01])(T\d{2}:\d{2}:\d{2})?]'
@@ -412,11 +416,11 @@ def get_session_period(context: Optional[Context] = None) -> Tuple[str, str]:
 
     if (period_str := context['dag_run'].conf.get('period')):
         if not re.match(_FULL_REGX, period_str):
-            raise AirflowFailException('Period must be specified as "period": "[<date_from>,<date_to>]"')
+            raise AirflowFailException('Period must be specified as {"period": "[<from>,<to>]"}, got %s instead', period_str)
         
         period = [isoparse(x.group(0)) for x in re.finditer(_TS_REGX, period_str)]
         if len(period) < 2:
-            raise AirflowFailException('Invalid period: two valid dates in YYYY-MM-DD format must be specified')
+            raise AirflowFailException('Invalid period: two valid dates in ISO format must be specified, got %s instead', period_str)
 
         # If no time part is provided in the upper period bound,
         # consider this to be date-only and add 1 day to align to days'end

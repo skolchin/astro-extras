@@ -11,10 +11,13 @@ from astro_extras import *
 # Forward table declaration
 source_types_table = Table('types', 'source_db')
 source_data_table = Table('table_data', 'source_db')
+source_ods_table = Table('ods_data', 'source_db')
 stage_types_table = Table('types', 'target_db', metadata=Metadata(schema='stage'))
 stage_data_table = Table('table_data', 'target_db', metadata=Metadata(schema='stage'))
+stage_ods_table = Table('ods_data', 'target_db', metadata=Metadata(schema='stage'))
 actuals_types_table = Table('types', 'target_db', metadata=Metadata(schema='actuals'))
 actuals_data_table = Table('table_data', 'target_db', metadata=Metadata(schema='actuals'))
+actuals_ods_table = Table('ods_data', 'target_db', metadata=Metadata(schema='actuals'))
 dwh_dim_types_table = Table('dim_types', 'target_db', metadata=Metadata(schema='dwh'))
 dwh_data_fact_table = Table('data_facts', 'target_db', metadata=Metadata(schema='dwh'))
 
@@ -38,12 +41,13 @@ with DAG(
     # (for demo purpose it simply selects all)
 
     transfer_changed_table(source_types_table, stage_types_table, session=session) >> \
-    transfer_table(source_data_table, stage_data_table, session=session)
+    transfer_table(source_data_table, stage_data_table, session=session) >> \
+    transfer_ods_table(source_ods_table, stage_ods_table, session=session)
 
 with DAG(
     dag_id='stage-actuals-load',
     start_date=pendulum.today().add(days=-1),
-    schedule=[stage_types_table, stage_data_table],
+    schedule=[stage_types_table, stage_data_table, stage_ods_table],
     catchup=False,
     tags=['demo', 'pipeline'],
 ) as dag, ETLSession('target_db', 'target_db') as session:
@@ -52,7 +56,8 @@ with DAG(
     transfer_actuals_tables(
         [stage_types_table, stage_data_table], 
         [actuals_types_table, actuals_data_table], 
-        session=session)
+        session=session) >> \
+    transfer_actuals_table(stage_ods_table, actuals_ods_table, session=session, as_ods=True)
 
 with DAG(
     dag_id='actuals-dwh-load',
