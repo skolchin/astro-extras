@@ -231,10 +231,12 @@ class ActualsTableTransfer(TableTransfer):
         destination_table: BaseTable,
         session: ETLSession | None = None,
         as_ods: bool = False,
+        keep_temp_table: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(source_table=source_table, destination_table=destination_table, session=session, **kwargs)
         self.as_ods = as_ods
+        self.keep_temp_table = keep_temp_table
 
     def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
@@ -335,8 +337,8 @@ class ActualsTableTransfer(TableTransfer):
                 if_conflicts='update',
             )
         finally:
-            # self.dest_db.drop_table(temp_table)
-            pass
+            if not self.keep_temp_table:
+                self.dest_db.drop_table(temp_table)
 
 class TimedTableTransfer(ChangedTableTransfer):
     """
