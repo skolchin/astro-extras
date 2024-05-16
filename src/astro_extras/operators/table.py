@@ -6,7 +6,8 @@
 import logging
 import pandas as pd
 import warnings
-from sqlalchemy import text, MetaData as SqlaMetadata
+from sqlalchemy import MetaData as SqlaMetadata
+
 from airflow.models.dag import DagContext
 from airflow.utils.context import Context
 from airflow.models.xcom_arg import XComArg
@@ -14,14 +15,16 @@ from airflow.utils.task_group import TaskGroup
 from airflow.exceptions import AirflowFailException
 from airflow.providers.common.sql.hooks.sql import DbApiHook
 from airflow.operators.generic_transfer import GenericTransfer
+
 from astro import sql as aql
 from astro.databases import create_database
 from astro.sql.table import BaseTable, Table
 from astro.databases.base import BaseDatabase
 from astro.query_modifier import QueryModifier
 from astro.airflow.datasets import kwargs_with_datasets
+
 from .session import ETLSession, ensure_session
-from ..utils.utils import ensure_table, schedule_ops, split_table_name, is_same_database_uri
+from ..utils.utils import ensure_table, schedule_ops, is_same_database_uri
 from ..utils.template import get_template, get_template_file, get_predefined_template
 from ..utils.data_compare import compare_datasets, compare_timed_dict
 
@@ -44,6 +47,7 @@ class TableTransfer(GenericTransfer):
         source_table: BaseTable,
         destination_table: BaseTable,
         session: ETLSession | None = None,
+        in_memory_transfer: bool = True,
         **kwargs,
     ) -> None:
 
@@ -64,12 +68,14 @@ class TableTransfer(GenericTransfer):
         self.destination: BaseTable = destination_table
         # self.destination_table is set by super().__init__()
         self.session: ETLSession = session
+        self.in_memory_transfer: bool = in_memory_transfer
         self._pre_execute_called = False
 
     def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
 
         # Check whether a template SQL exists for given table under dags\templates\<dag_id>
+        # Actual query will be loaded by Airflow templating itself
         if (sql_file := get_template_file(table.name, '.sql')):
             self.log.info(f'Using template file {sql_file}')
             return sql_file
@@ -110,8 +116,20 @@ class TableTransfer(GenericTransfer):
     def execute(self, context: Context):
         """ Execute operator """
         self._pre_execute(context)
-        return super().execute(context)
-            
+        if not self.in_memory_transfer:
+            return super().execute(context)
+        
+        # upload source data to memory
+        src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
+        data = src.get_pandas_df(self.sql)
+        if data is None or data.empty:
+            self.log.info('No data to transfer')
+            return
+        
+        # Save to target table
+        self.log.info(f'{len(data)} records to be transferred')
+        self.dest_db.load_pandas_dataframe_to_table(data, self.destination, if_exists='append')
+
 class ChangedTableTransfer(TableTransfer):
     """
     Table transfer operator to be used within `transfer_changed_table` function.
@@ -168,42 +186,42 @@ class OdsTableTransfer(ChangedTableTransfer):
     to transfer data from source to ODS-style target.
     
     Requiures `xxx_a` view to exist on target. Target table must have
-    `_modified' and `_deleted` attributes of `timestamp with time zone` type.
+    `_modified' and `_deleted` attributes of `timestamp` or `timestamptz` type.
     """
-
     ui_color = "#78f07c"
+
+    def _save_data(self, df: pd.DataFrame, modified: pd.Timestamp, deleted: pd.Timestamp | None, category: str) -> None:
+        if df is not None and not df.empty:
+            if self.session is not None:
+                df.drop(columns=set(['session_id', '_modified', '_deleted']) & set(df.columns), inplace=True)
+                df.insert(0, '_deleted', deleted)
+                df.insert(0, '_modified', modified)
+                df.insert(0, 'session_id', self.session.session_id)
+            else:
+                df['_modified'] = modified
+                df['_deleted'] = deleted
+
+            self.log.info(f'Saving {df.shape[0]} {category} records to {self.destination_table}')
+            self.dest_db.load_pandas_dataframe_to_table(df, self.destination, if_exists='append')
 
     def execute(self, context: Context):
         """ Execute operator """
+
+        # All the checks
         self._pre_execute(context)
 
-        # compare datasets and get delta frames (new/modified/deleted)
-        dest_db = create_database(self.destination.conn_id)
+        # compare datasets and save delta frames to target (new/modified/deleted)
         dfn, dfm, dfd = self._compare_datasets(stop_on_first_diff=False)
+        self._save_data(dfn, pd.Timestamp.utcnow(), pd.NaT, 'new')
+        self._save_data(dfm, pd.Timestamp.utcnow(), pd.NaT, 'modified')
+        self._save_data(dfd, pd.Timestamp.utcnow(), pd.Timestamp.utcnow(), 'deleted')
 
-        def _save_data(df, modified, deleted, title):
-            if df is not None and not df.empty:
-                if self.session is not None:
-                    df.drop(columns=set(['session_id', '_modified', '_deleted']) & set(df.columns), inplace=True)
-                    df.insert(0, '_deleted', deleted)
-                    df.insert(0, '_modified', modified)
-                    df.insert(0, 'session_id', self.session.session_id)
-                else:
-                    df['_modified'] = modified
-                    df['_deleted'] = deleted
-
-                self.log.info(f'Saving {title} records ({df.shape[0]}) to {self.destination_table}')
-                dest_db.load_pandas_dataframe_to_table(df, self.destination, if_exists='append')
-
-        _save_data(dfn, pd.Timestamp.utcnow(), pd.NaT, 'new')
-        _save_data(dfm, pd.Timestamp.utcnow(), pd.NaT, 'modified')
-        _save_data(dfd, pd.Timestamp.utcnow(), pd.Timestamp.utcnow(), 'deleted')
-
-class ActualsTableTransfer(OdsTableTransfer):
+class ActualsTableTransfer(TableTransfer):
     """
     Table transfer operator to be used within `transfer_actuals_table` function.
-    Requiures `xxx_a` view to exist on source.
+    Source and target table must have `_deleted` attribute of `timestamp` or `timestamptz` type.
     """
+
     ui_color = "#5af07d"
 
     def __init__(
@@ -237,8 +255,8 @@ class ActualsTableTransfer(OdsTableTransfer):
     def execute(self, context: Context):
         """ Execute operator """
 
-        # Establish session
-        session = ensure_session(self.session, context)
+        # All the checks
+        self._pre_execute(context)
 
         # Get the hooks to setup the transfer
         src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
@@ -291,15 +309,15 @@ class ActualsTableTransfer(OdsTableTransfer):
             # Source and destination tables are in the same database, use `insert` query
             # Query modifier is required to set proper session_id (source table already contains this column)
             self.log.info(f'Source and destination tables are in the same database')
-            qm = None if not session else \
-                QueryModifier(post_queries=[f'update {self.dest_db.get_table_qualified_name(temp_table)} set session_id={session.session_id}'])
+            qm = None if not self.session else \
+                QueryModifier(post_queries=[f'update {self.dest_db.get_table_qualified_name(temp_table)} set session_id={self.session.session_id}'])
             self.dest_db.create_table_from_select_statement(sql, temp_table, query_modifier=qm)
         else:
             # Source and destination tables are in different databases
             self.log.info(f'Source and destination tables are in different databases, using in-memory transfer')
             df = src.get_pandas_df(sql)
-            if session:
-                df['session_id'] = session.session_id
+            if self.session:
+                df['session_id'] = self.session.session_id
             self.dest_db.load_pandas_dataframe_to_table(df, temp_table, if_exists='replace')
 
         # Count rows
@@ -319,39 +337,14 @@ class ActualsTableTransfer(OdsTableTransfer):
         finally:
             self.dest_db.drop_table(temp_table)
 
-
-class TimedTableTransfer(TableTransfer):
+class TimedTableTransfer(ChangedTableTransfer):
     """
     Table transfer operator to be used within `update_timed_dict` function.
     Implements timed dictionary update behaviour.
     Requiures `xxx_a` view to exist both on source and target.
     """
 
-    template_fields = ("sql", "preoperator", "source_table", "destination_table", "destination_sql")
-    template_fields_renderers = {"sql": "sql", "preoperator": "sql", "destination_sql": "sql"}
     ui_color = "#3cf07e"
-
-    def __init__(
-        self,
-        *,
-        source_table: BaseTable,
-        destination_table: BaseTable,
-        session: ETLSession | None = None,
-        **kwargs,
-    ) -> None:
-
-        source_db = create_database(source_table.conn_id, source_table)
-        sql = kwargs.pop('sql', self._get_sql(source_table, source_db, session, suffix='_a'))
-        dest_db = create_database(destination_table.conn_id, destination_table)
-        dest_sql = kwargs.pop('destination_sql', self._get_sql(destination_table, dest_db, suffix='_a'))
-
-        super().__init__(source_table=source_table,
-                         destination_table=destination_table,
-                         session=session,
-                         sql=sql,
-                         **kwargs)
-
-        self.destination_sql: str = dest_sql
 
     def execute(self, context: Context):
         """ Execute operator """
@@ -370,22 +363,20 @@ class TimedTableTransfer(TableTransfer):
 
         # Get the deltas
         df_opening, df_closing = compare_timed_dict(df_src, df_trg)
-        if df_opening is None and df_closing is None:
+        if (df_opening is None or df_opening.empty) and (df_closing is None or df_closing.empty):
             self.log.info('No changes detected, nothing to do')
             return
 
-        # Save data in a single transaction
-        dest_schema, dest_table = split_table_name(self.destination_table)
-        with dest.get_sqlalchemy_engine().connect() as conn, conn.begin():
-            if df_closing is not None:
-                for row in df_closing.itertuples(index=False):
-                    sql = f"update {self.destination_table} set effective_to='{row.effective_to.isoformat()}' " \
-                          f"where src_id={row.src_id} and effective_to is null"
-                    self.log.info(f'Executing: {sql}')
-                    conn.execute(text(sql))
+        # Update records to be closed
+        if df_closing is not None and not df_closing.empty:
+            update_sql_template = get_predefined_template('table_timed_update.sql')
+            update_sql = update_sql_template.render(destination_table=self.destination_table)
+            update_params = df_closing.to_dict(orient='list')
+            self.dest_db.run_single_sql_query(update_sql, parameters=update_params)
 
-            if df_opening is not None:
-                df_opening.to_sql(dest_table, conn, schema=dest_schema, index=False, if_exists='append')
+        # Insert new records
+        if df_opening is not None and not df_opening.empty:
+            self.dest_db.load_pandas_dataframe_to_table(df_opening, self.destination, if_exists='append')
 
 class CompareTableOperator(ChangedTableTransfer):
     """
