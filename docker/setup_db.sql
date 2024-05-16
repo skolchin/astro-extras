@@ -23,8 +23,11 @@ create table public."connection" (
 
 insert into public."connection" (conn_id,conn_type,description,host,"schema",login,"password",port,is_encrypted,is_extra_encrypted,extra) 
 values
-	 ('target_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
-	 ('source_db','postgres','','postgres','source_db','postgres','918ja620_82',5432,false,false,'');
+	('source_db','postgres','','postgres','source_db','postgres','918ja620_82',5432,false,false,''),
+	('target_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
+	('stage_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
+	('actuals_db','postgres','','postgres','actuals_db','postgres','918ja620_82',5432,false,false,''),
+	('dwh_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,'');
 
 --
 -- Marquez DB setup
@@ -84,7 +87,7 @@ from generate_series(1, 1000);
 --  dwh which is supposed to contain some data marts and cubes
 
 create database target_db;
-comment on database target_db is 'Target database';
+comment on database target_db is 'Target (stage) database';
 
 \c target_db
 
@@ -159,42 +162,6 @@ create view stage.ods_data_a as
 
 comment on view stage.ods_data_a is 'Actual data view for stage.ods_data';
 
--- actuals
-create schema actuals;
-comment on schema actuals is 'Actuals area';
-
-create table actuals.types(
-    type_id int not null primary key,
-    session_id int not null,
-    type_name text not null
-);
-comment on table actuals.types is 'Actuals types table';
-
-create table actuals.table_data(
-    id int not null primary key,
-    session_id int not null,
-    type_id int not null references actuals.types(type_id),
-    comments text not null,
-    created_ts timestamp not null default current_timestamp,
-    modified_ts timestamp null
-);
-comment on table actuals.table_data is 'Actuals data table';
-
-create table actuals.ods_data (
-    id int not null primary key,
-    session_id int not null references public.sessions(session_id),
-    _modified timestamp,
-    _deleted timestamp,
-    type_id int not null references actuals.types(type_id),
-    comments text not null,
-    created_ts timestamp not null default current_timestamp,
-    modified_ts timestamp null
-);
-comment on table actuals.ods_data is 'Actuals ODS data table';
-
-create view actuals.ods_data_a as select * from actuals.ods_data where "_deleted" is null order by id;
-
-comment on view actuals.ods_data is 'Actual data view for Actuals ODS data table';
 
 -- dwh
 create schema dwh;
@@ -227,3 +194,47 @@ create table dwh.data_facts(
 comment on table dwh.data_facts is 'Fact table';
 
 create unique index data_facts_uq_idx on dwh.data_facts(type_id);
+
+--
+-- Actuals DB setup
+
+create database actuals_db;
+comment on database actuals_db is 'Actuals database';
+
+\c actuals_db
+
+-- actuals
+create schema actuals;
+comment on schema actuals is 'Actuals area';
+
+create table actuals.types(
+    type_id int not null primary key,
+    session_id int not null,
+    type_name text not null
+);
+comment on table actuals.types is 'Actuals types table';
+
+create table actuals.table_data(
+    id int not null primary key,
+    session_id int not null,
+    type_id int not null references actuals.types(type_id),
+    comments text not null,
+    created_ts timestamp not null default current_timestamp,
+    modified_ts timestamp null
+);
+comment on table actuals.table_data is 'Actuals data table';
+
+create table actuals.ods_data (
+    id int not null primary key,
+    session_id int not null,
+    _modified timestamp,
+    _deleted timestamp,
+    type_id int not null references actuals.types(type_id),
+    comments text not null,
+    created_ts timestamp not null default current_timestamp,
+    modified_ts timestamp null
+);
+comment on table actuals.ods_data is 'Actuals ODS data table';
+
+create view actuals.ods_data_a as select * from actuals.ods_data where "_deleted" is null order by id;
+comment on view actuals.ods_data_a is 'Actual data view for Actuals ODS data table';

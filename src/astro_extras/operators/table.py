@@ -6,7 +6,7 @@
 import logging
 import pandas as pd
 import warnings
-from sqlalchemy import MetaData as SqlaMetadata
+from sqlalchemy import MetaData as SqlaMetadata, Table as SqlaTable
 
 from airflow.models.dag import DagContext
 from airflow.utils.context import Context
@@ -47,7 +47,7 @@ class TableTransfer(GenericTransfer):
         source_table: BaseTable,
         destination_table: BaseTable,
         session: ETLSession | None = None,
-        in_memory_transfer: bool = True,
+        in_memory_transfer: bool = False,
         **kwargs,
     ) -> None:
 
@@ -264,8 +264,8 @@ class ActualsTableTransfer(TableTransfer):
         src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
         dest: DbApiHook = DbApiHook.get_hook(self.destination_conn_id)
 
-        # Load source and target table structures using SQL alchemy
         with src.get_sqlalchemy_engine().connect() as src_conn, dest.get_sqlalchemy_engine().connect() as dest_conn:
+            # Load source and target table structures using SQL alchemy
             src_meta = SqlaMetadata(src_conn, schema=self.source.metadata.schema if self.source.metadata else None)
             src_meta.reflect(only=[self.source.name])
             src_sqla_table = src_meta.tables[self.source_table]
@@ -281,46 +281,51 @@ class ActualsTableTransfer(TableTransfer):
                 if '_deleted' not in dest_sqla_table.columns:
                     raise AirflowFailException(f'Target table {self.destination_table} does not have `_deleted` column required for ODS-style transfer')
 
-        # Check whether the hooks point to the same database
-        same_db = is_same_database_uri(src.get_uri(), dest.get_uri())
+            # Build a source-to-target column mapping
+            col_map = {}
+            id_cols = []
+            for src_col in src_sqla_table.columns:
+                if (dest_col := dest_sqla_table.columns.get(src_col.name)) is None:
+                    self.log.warning(f'Column {src_col.name} does not exist in {self.destination_table} table, skipping')
+                else:
+                    # If a column is PK, store it to use in `on conflict` statement part
+                    col_map[src_col.name] = dest_col.name
+                    if dest_col.primary_key:
+                        id_cols.append(dest_col.name)
 
-        # Build a source-to-target column mapping
-        col_map = {}
-        id_cols = []
-        for src_col in src_sqla_table.columns:
-            if (dest_col := dest_sqla_table.columns.get(src_col.name)) is None:
-                self.log.warning(f'Column {src_col.name} does not exist in {self.destination_table} table, skipping')
+            # Check there are any ID columns on target
+            if not id_cols:
+                raise AirflowFailException(f'Could not detect primary key on {self.destination_table}')
+
+            # Wrap data selection query into `select distinct on` in order to avoid having multiple IDs error
+            id_cols_str = ",".join(id_cols)
+            sql = f'select distinct on ({id_cols_str}) * from ({self.sql}) q order by {id_cols_str}, session_id desc'
+            self.log.info(f'Source extraction SQL:\n{sql}')
+
+            # Check whether the hooks point to the same database
+            same_db = is_same_database_uri(src.get_uri(), dest.get_uri())
+
+            # Upload source data to temporary table in destination database
+            temp_table = Table(metadata=self.destination.metadata, temp=True)
+            if same_db:
+                # Source and destination tables are in the same database, use `insert` query
+                # Query modifier is required to set proper session_id (source table already contains this column)
+                self.log.info(f'Source and destination tables are in the same database')
+                qm = None if not self.session else \
+                    QueryModifier(post_queries=[f'update {self.dest_db.get_table_qualified_name(temp_table)} set session_id={self.session.session_id}'])
+                self.dest_db.create_table_from_select_statement(sql, temp_table, query_modifier=qm)
             else:
-                # If a column is PK, store it to use in `on conflict` statement part
-                col_map[src_col.name] = dest_col.name
-                if dest_col.primary_key:
-                    id_cols.append(dest_col.name)
+                # Source and destination tables are in different databases
+                self.log.info(f'Source and destination tables are in different databases, using in-memory transfer')
+                df = src.get_pandas_df(sql)
+                if self.session:
+                    df['session_id'] = self.session.session_id
+                    col_map['session_id'] = 'session_id'
 
-        # Check there are any ID columns on target
-        if not id_cols:
-            raise AirflowFailException(f'Could not detect primary key on {self.destination_table}')
-
-        # Wrap data selection query into `select distinct on` in order to avoid having multiple IDs error
-        id_cols_str = ",".join(id_cols)
-        sql = f'select distinct on ({id_cols_str}) * from ({self.sql}) q order by {id_cols_str}, session_id desc'
-        self.log.info(f'Source extraction SQL:\n{sql}')
-
-        # Upload source data to temporary table
-        temp_table = Table(metadata=self.destination.metadata, temp=True)
-        if same_db:
-            # Source and destination tables are in the same database, use `insert` query
-            # Query modifier is required to set proper session_id (source table already contains this column)
-            self.log.info(f'Source and destination tables are in the same database')
-            qm = None if not self.session else \
-                QueryModifier(post_queries=[f'update {self.dest_db.get_table_qualified_name(temp_table)} set session_id={self.session.session_id}'])
-            self.dest_db.create_table_from_select_statement(sql, temp_table, query_modifier=qm)
-        else:
-            # Source and destination tables are in different databases
-            self.log.info(f'Source and destination tables are in different databases, using in-memory transfer')
-            df = src.get_pandas_df(sql)
-            if self.session:
-                df['session_id'] = self.session.session_id
-            self.dest_db.load_pandas_dataframe_to_table(df, temp_table, if_exists='replace')
+                # Temp table has to be created 1st, otherwise it might be column types mismatch
+                temp_sqla_table = SqlaTable(temp_table.name, dest_meta, *([c.copy() for c in src_sqla_table.columns]))
+                dest_meta.create_all(dest_conn, tables=[temp_sqla_table], checkfirst=False)
+                self.dest_db.load_pandas_dataframe_to_table(df, temp_table, if_exists='append')
 
         # Count rows
         row_count = self.dest_db.row_count(temp_table)
