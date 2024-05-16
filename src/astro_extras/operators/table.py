@@ -335,7 +335,8 @@ class ActualsTableTransfer(TableTransfer):
                 if_conflicts='update',
             )
         finally:
-            self.dest_db.drop_table(temp_table)
+            # self.dest_db.drop_table(temp_table)
+            pass
 
 class TimedTableTransfer(ChangedTableTransfer):
     """
