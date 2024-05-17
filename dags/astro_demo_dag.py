@@ -17,8 +17,8 @@ with DAG(
     tags=['demo', 'astro'],
 ) as dag:
 
-    input_table = Table('types', conn_id='oracle_db')
-    output_table = Table('types_copy', conn_id='oracle_db')
+    input_table = Table('types', conn_id='source_db', metadata=Metadata(schema='public'))
+    output_table = Table('types_copy', conn_id='target_db', metadata=Metadata(schema='stage'))
 
     @aql.run_raw_sql(results_format='pandas_dataframe')
     def load_table(table: Table):

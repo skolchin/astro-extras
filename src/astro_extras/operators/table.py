@@ -517,6 +517,9 @@ def _do_transfer_table(
     source_table = ensure_table(source, source_conn_id)
     dest_table = ensure_table(target or source_table, destination_conn_id)
 
+    print(f'{source_table.name} -> {dest_table.name} kwargs: ' \
+          f'{kwargs_with_datasets(kwargs=kwargs, input_datasets=source_table, output_datasets=dest_table)}')
+
     op = op_cls(
         source_table=source_table,
         destination_table=dest_table,
@@ -762,7 +765,7 @@ def transfer_changed_tables(
     See `transfer_changed_table` for more information.
     """
     return _do_transfer_tables(
-        op_cls=OdsTableTransfer,
+        op_cls=ChangedTableTransfer,
         source_tables=source_tables,
         target_tables=target_tables,
         source_conn_id=source_conn_id,
