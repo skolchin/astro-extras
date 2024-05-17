@@ -28,7 +28,7 @@ from ..utils.utils import ensure_table, schedule_ops, is_same_database_uri
 from ..utils.template import get_template, get_template_file, get_predefined_template
 from ..utils.data_compare import compare_datasets, compare_timed_dict
 
-from typing import Iterable, Type
+from typing import Iterable, Type, Dict
 
 class TableTransfer(GenericTransfer):
     """
@@ -47,7 +47,7 @@ class TableTransfer(GenericTransfer):
         source_table: BaseTable,
         destination_table: BaseTable,
         session: ETLSession | None = None,
-        in_memory_transfer: bool = False,
+        in_memory_transfer: bool = True,
         **kwargs,
     ) -> None:
 
@@ -69,7 +69,12 @@ class TableTransfer(GenericTransfer):
         # self.destination_table is set by super().__init__()
         self.session: ETLSession = session
         self.in_memory_transfer: bool = in_memory_transfer
-        self._pre_execute_called = False
+
+        # flag to prevent multiple _pre_execute() calls
+        self._pre_execute_called: bool = False
+
+        # statistics for openlineage
+        self._row_count: int = 0
 
     def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
@@ -121,14 +126,100 @@ class TableTransfer(GenericTransfer):
         
         # upload source data to memory
         src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
-        data = src.get_pandas_df(self.sql)
+        data: pd.DataFrame = src.get_pandas_df(self.sql)
         if data is None or data.empty:
             self.log.info('No data to transfer')
             return
         
         # Save to target table
-        self.log.info(f'{len(data)} records to be transferred')
+        self._row_count = len(data)
+        self.log.info(f'{self._row_count} records to be transferred')
         self.dest_db.load_pandas_dataframe_to_table(data, self.destination, if_exists='append')
+
+    def get_openlineage_facets_on_complete(self, task_instance):  # skipcq: PYL-W0613
+        """
+        Collect the input, output, job and run facets for DataframeOperator
+        """
+        from airflow.providers.openlineage.extractors.base import OperatorLineage
+        from openlineage.client.run import Dataset
+        from openlineage.client.facet import (
+            BaseFacet,
+            DataSourceDatasetFacet,
+            OutputStatisticsOutputDatasetFacet,
+            SchemaDatasetFacet,
+            SchemaField,
+            SqlJobFacet,
+        )
+        # self.log.info(f'TableTransfer.get_openlineage_facets_on_complete() called for {task_instance}')
+
+        input_dataset: list[Dataset] = []
+        if self.source and self.source.openlineage_emit_temp_table_event():
+            input_dataset = [
+                Dataset(
+                    namespace=self.source.openlineage_dataset_namespace(),
+                    name=self.source.openlineage_dataset_name(),
+                    facets={
+                        "schema": SchemaDatasetFacet(
+                            fields=[
+                                SchemaField(
+                                    name=self.source.metadata.schema or self.source_db.default_metadata.schema,
+                                    type='schema',
+                                ),
+                                SchemaField(
+                                    name=self.source.metadata.database or self.source_db.default_metadata.database,
+                                    type='database',
+                                ),
+                            ]
+                        ),
+                        "dataSource": DataSourceDatasetFacet(
+                            name=self.source_table, uri=self.source.openlineage_dataset_uri()
+                        ),
+                        "sourceQuery": SqlJobFacet(
+                            query=self.sql,
+                        ),
+                        # "outputStatistics": OutputStatisticsOutputDatasetFacet(
+                        #     rowCount=self._row_count,
+                        # ),
+                    },
+                ),
+            ]
+        # self.log.info(f'TableTransfer.get_openlineage_facets_on_complete() input_dataset: {input_dataset}')
+
+        output_dataset: list[Dataset] = []
+        if self.destination and self.destination.openlineage_emit_temp_table_event():  # pragma: no cover
+            output_dataset = [
+                Dataset(
+                    namespace=self.destination.openlineage_dataset_namespace(),
+                    name=self.destination.openlineage_dataset_name(),
+                    facets={
+                        "schema": SchemaDatasetFacet(
+                            fields=[
+                                SchemaField(
+                                    name=self.destination.metadata.schema or self.dest_db.default_metadata.schema,
+                                    type='schema',
+                                ),
+                                SchemaField(
+                                    name=self.destination.metadata.database or self.dest_db.default_metadata.database,
+                                    type='database',
+                                ),
+                            ]
+                        ),
+                        "dataSource": DataSourceDatasetFacet(
+                            name=self.destination_table, uri=self.destination.openlineage_dataset_uri()
+                        ),
+                        "stats": OutputStatisticsOutputDatasetFacet(
+                            rowCount=self._row_count,
+                        ),
+                    },
+                ),
+            ]
+        # self.log.info(f'TableTransfer.get_openlineage_facets_on_complete() output_dataset: {output_dataset}')
+
+        run_facets: dict[str, BaseFacet] = {}
+        job_facets: dict[str, BaseFacet] = {}
+        return OperatorLineage(
+            inputs=input_dataset, outputs=output_dataset, run_facets=run_facets, job_facets=job_facets
+        )
 
 class ChangedTableTransfer(TableTransfer):
     """
@@ -190,19 +281,21 @@ class OdsTableTransfer(ChangedTableTransfer):
     """
     ui_color = "#78f07c"
 
-    def _save_data(self, df: pd.DataFrame, modified: pd.Timestamp, deleted: pd.Timestamp | None, category: str) -> None:
-        if df is not None and not df.empty:
+    def _save_data(self, data: pd.DataFrame, modified: pd.Timestamp, deleted: pd.Timestamp | None, category: str) -> None:
+        if data is not None and not data.empty:
             if self.session is not None:
-                df.drop(columns=set(['session_id', '_modified', '_deleted']) & set(df.columns), inplace=True)
-                df.insert(0, '_deleted', deleted)
-                df.insert(0, '_modified', modified)
-                df.insert(0, 'session_id', self.session.session_id)
+                data.drop(columns=set(['session_id', '_modified', '_deleted']) & set(data.columns), inplace=True)
+                data.insert(0, '_deleted', deleted)
+                data.insert(0, '_modified', modified)
+                data.insert(0, 'session_id', self.session.session_id)
             else:
-                df['_modified'] = modified
-                df['_deleted'] = deleted
+                data['_modified'] = modified
+                data['_deleted'] = deleted
 
-            self.log.info(f'Saving {df.shape[0]} {category} records to {self.destination_table}')
-            self.dest_db.load_pandas_dataframe_to_table(df, self.destination, if_exists='append')
+            self.log.info(f'Saving {data.shape[0]} {category} records to {self.destination_table}')
+            self.dest_db.load_pandas_dataframe_to_table(data, self.destination, if_exists='append')
+
+            self._row_count += len(data)
 
     def execute(self, context: Context):
         """ Execute operator """
@@ -211,6 +304,7 @@ class OdsTableTransfer(ChangedTableTransfer):
         self._pre_execute(context)
 
         # compare datasets and save delta frames to target (new/modified/deleted)
+        self._row_count = 0
         dfn, dfm, dfd = self._compare_datasets(stop_on_first_diff=False)
         self._save_data(dfn, pd.Timestamp.utcnow(), pd.NaT, 'new')
         self._save_data(dfm, pd.Timestamp.utcnow(), pd.NaT, 'modified')
@@ -328,8 +422,8 @@ class ActualsTableTransfer(TableTransfer):
                 self.dest_db.load_pandas_dataframe_to_table(df, temp_table, if_exists='append')
 
         # Count rows
-        row_count = self.dest_db.row_count(temp_table)
-        self.log.info(f'Number of rows selected: {row_count}')
+        self._row_count = self.dest_db.row_count(temp_table)
+        self.log.info(f'{self._row_count} records to be transferred')
 
         # Merge temporary and target tables
         try:
@@ -516,9 +610,6 @@ def _do_transfer_table(
 
     source_table = ensure_table(source, source_conn_id)
     dest_table = ensure_table(target or source_table, destination_conn_id)
-
-    print(f'{source_table.name} -> {dest_table.name} kwargs: ' \
-          f'{kwargs_with_datasets(kwargs=kwargs, input_datasets=source_table, output_datasets=dest_table)}')
 
     op = op_cls(
         source_table=source_table,

@@ -19,6 +19,9 @@ COPY ./README.md /tmp/astro_extras/
 COPY ./src /tmp/astro_extras/src
 RUN pip install -e /tmp/astro_extras
 
+# this is to debug openlineage integration
+# COPY ./docker/ol_base_patched.py /home/airflow/.local/lib/python3.10/site-packages/airflow/providers/openlineage/extractors/base.py
+
 USER 0
 COPY ./docker/airflow.cfg /opt/airflow/airflow.cfg
 RUN chown -R $AIRFLOW_UID:root /opt/airflow/
