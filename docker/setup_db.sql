@@ -162,6 +162,41 @@ create view stage.ods_data_a as
 
 comment on view stage.ods_data_a is 'Actual data view for stage.ods_data';
 
+-- actuals
+create schema actuals;
+comment on schema actuals is 'Actuals area (for same-db transfers)';
+
+create table actuals.types(
+    type_id int not null primary key,
+    session_id int not null,
+    type_name text not null
+);
+comment on table actuals.types is 'Actuals types table';
+
+create table actuals.table_data(
+    id int not null primary key,
+    session_id int not null,
+    type_id int not null references actuals.types(type_id),
+    comments text not null,
+    created_ts timestamp not null default current_timestamp,
+    modified_ts timestamp null
+);
+comment on table actuals.table_data is 'Actuals data table';
+
+create table actuals.ods_data (
+    id int not null primary key,
+    session_id int not null,
+    _modified timestamp,
+    _deleted timestamp,
+    type_id int not null references actuals.types(type_id),
+    comments text not null,
+    created_ts timestamp not null default current_timestamp,
+    modified_ts timestamp null
+);
+comment on table actuals.ods_data is 'Actuals ODS data table';
+
+create view actuals.ods_data_a as select * from actuals.ods_data where "_deleted" is null order by id;
+comment on view actuals.ods_data_a is 'Actual data view for Actuals ODS data table';
 
 -- dwh
 create schema dwh;
@@ -199,7 +234,7 @@ create unique index data_facts_uq_idx on dwh.data_facts(type_id);
 -- Actuals DB setup
 
 create database actuals_db;
-comment on database actuals_db is 'Actuals database';
+comment on database actuals_db is 'Actuals database (for different db transfers)';
 
 \c actuals_db
 

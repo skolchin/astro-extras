@@ -1,4 +1,4 @@
--- SQL template to select data for ods-to-actuals transfer
+-- SQL template to select data for ods-to-actuals transfer. `t.*` will be replaced with actual columns list.
 select t.* from {{source_table}} t inner join public.sessions s
 {% raw -%}
     on t.session_id = s.session_id and s.status='success'

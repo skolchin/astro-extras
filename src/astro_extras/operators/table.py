@@ -6,7 +6,9 @@
 import logging
 import pandas as pd
 import warnings
-from sqlalchemy import MetaData as SqlaMetadata, Table as SqlaTable
+from functools import cached_property
+from sqlalchemy import text, Table as SqlaTable
+from sqlalchemy.engine.base import Connection as SqlaConnection
 
 from airflow.models.dag import DagContext
 from airflow.utils.context import Context
@@ -27,8 +29,9 @@ from .session import ETLSession, ensure_session
 from ..utils.utils import ensure_table, schedule_ops, is_same_database_uri
 from ..utils.template import get_template, get_template_file, get_predefined_template
 from ..utils.data_compare import compare_datasets, compare_timed_dict
+from ..utils.postgres_sql import postgres_merge_tables
 
-from typing import Iterable, Type, Dict
+from typing import Iterable, Type
 
 class TableTransfer(GenericTransfer):
     """
@@ -41,6 +44,31 @@ class TableTransfer(GenericTransfer):
     template_fields_renderers = {"sql": "sql", "preoperator": "sql"}
     ui_color = "#b4f07c"
 
+    # Public attributes
+    source_db: BaseDatabase
+    """ Source database object """
+
+    dest_db: BaseDatabase
+    """ Destination database object """
+
+    source: BaseTable
+    """ Source table object """
+
+    source_table: str
+    """ Source table fully-qualified name """
+
+    destination: BaseTable
+    """ Destination table object """
+
+    destination_table: str
+    """ Destination table fully-qualified name """
+
+    session: ETLSession | XComArg | None = None
+    """ ETL Session. Use `ensure_session` to cast to proper session type """
+
+    in_memory_transfer: bool = True
+    """ Flag to use in-memory transfer (othewise it would be Airflow's cursor-based, which is several times slower) """
+
     def __init__(
         self,
         *,
@@ -51,8 +79,8 @@ class TableTransfer(GenericTransfer):
         **kwargs,
     ) -> None:
 
-        self.source_db: BaseDatabase = create_database(source_table.conn_id)
-        self.dest_db: BaseDatabase = create_database(destination_table.conn_id)
+        self.source_db = create_database(source_table.conn_id)
+        self.dest_db = create_database(destination_table.conn_id)
         sql: str = kwargs.pop('sql', self._get_sql(source_table, self.source_db, session))
 
         task_id = kwargs.pop('task_id', f'transfer-{source_table.name}')
@@ -63,18 +91,30 @@ class TableTransfer(GenericTransfer):
                          destination_conn_id=destination_table.conn_id,
                          **kwargs)
 
-        self.source: BaseTable = source_table
-        self.source_table: str = self.source_db.get_table_qualified_name(self.source)
-        self.destination: BaseTable = destination_table
+        self.source = source_table
+        self.source_table = self.source_db.get_table_qualified_name(self.source)
+        self.destination = destination_table
         # self.destination_table is set by super().__init__()
-        self.session: ETLSession = session
-        self.in_memory_transfer: bool = in_memory_transfer
+        self.session = session
+        self.in_memory_transfer = in_memory_transfer
 
         # flag to prevent multiple _pre_execute() calls
         self._pre_execute_called: bool = False
 
         # statistics for openlineage
         self._row_count: int = 0
+
+    @cached_property
+    def source_hook(self) -> DbApiHook:
+        return DbApiHook.get_hook(self.source_conn_id)
+    
+    @cached_property
+    def dest_hook(self) -> DbApiHook:
+        return DbApiHook.get_hook(self.destination_conn_id)
+
+    @cached_property
+    def dest_hook(self) -> DbApiHook:
+        return DbApiHook.get_hook(self.destination_conn_id)
 
     def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
@@ -93,15 +133,20 @@ class TableTransfer(GenericTransfer):
         return template.render(source_table=full_name)
 
     def _pre_execute(self, context: Context):
-        """ Do all checks before execution """
+        """ Internal - run before execution """
+
         if self._pre_execute_called:
             return
-        
+
+        # Set debug level logging if requestedupon DAG start
+        # Config is: {..., "debug": true}
         assert 'dag_run' in context
         if context['dag_run'].conf.get('debug'):
             self.log.setLevel(logging.DEBUG)
             logging.getLogger('airflow.task').setLevel(logging.DEBUG)
+            self.log.debug('Log level set to DEBUG')
 
+        # Transform XComArg session into ETLSession
         self.session = ensure_session(self.session, context)
         if self.session:
             if not self.source_conn_id:
@@ -116,6 +161,24 @@ class TableTransfer(GenericTransfer):
         if self.source_conn_id == self.destination_conn_id and self.source_table == self.destination_table:
             raise AirflowFailException('Source and destination must not be the same')
         
+        # Load source and target table definitions
+        # consider adding a flag to skip one or both - usable for slow connections
+        src_meta = self.source.sqlalchemy_metadata
+        src_meta.reflect(bind=self.source_db.connection, only=[self.source.name])
+        if (src_sqla_table := src_meta.tables.get(self.source_table)) is None:
+            raise AirflowFailException(f'Table {self.source_table} does not exist on {self.source_conn_id}')
+        for c in src_sqla_table.columns:
+            self.source.columns.append(c)
+        self.log.info(f'Table {self.source_table} columns: {",".join([f"{c.name} {c.type}" for c in self.source.columns])}')
+
+        dest_meta = self.destination.sqlalchemy_metadata
+        dest_meta.reflect(bind=self.dest_db.connection, only=[self.destination.name])
+        if (dest_sqla_table := dest_meta.tables.get(self.destination_table)) is None:
+            raise AirflowFailException(f'Table {self.destination_table} does not exist on {self.destination_conn_id}')
+        for c in dest_sqla_table.columns:
+            self.destination.columns.append(c)
+        self.log.info(f'Table {self.destination_table} columns: {",".join([f"{c.name} {c.type}" for c in self.destination.columns])}')
+
         self._pre_execute_called = True
 
     def execute(self, context: Context):
@@ -124,17 +187,15 @@ class TableTransfer(GenericTransfer):
         if not self.in_memory_transfer:
             return super().execute(context)
         
-        # upload source data to memory
-        src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
-        data: pd.DataFrame = src.get_pandas_df(self.sql)
+        # upload source data to memory (might need to use chunks)
+        data = pd.read_sql(self.sql, self.source_db.connection)
         if data is None or data.empty:
             self.log.info('No data to transfer')
-            return
-        
-        # Save to target table
-        self._row_count = len(data)
-        self.log.info(f'{self._row_count} records to be transferred')
-        self.dest_db.load_pandas_dataframe_to_table(data, self.destination, if_exists='append')
+        else:
+            # save to target table
+            self._row_count = len(data)
+            self.log.info(f'{self._row_count} records to be transferred')
+            self.dest_db.load_pandas_dataframe_to_table(data, self.destination, if_exists='append')
 
     def get_openlineage_facets_on_complete(self, task_instance):  # skipcq: PYL-W0613
         """
@@ -150,7 +211,6 @@ class TableTransfer(GenericTransfer):
             SchemaField,
             SqlJobFacet,
         )
-        # self.log.info(f'TableTransfer.get_openlineage_facets_on_complete() called for {task_instance}')
 
         input_dataset: list[Dataset] = []
         if self.source and self.source.openlineage_emit_temp_table_event():
@@ -162,28 +222,22 @@ class TableTransfer(GenericTransfer):
                         "schema": SchemaDatasetFacet(
                             fields=[
                                 SchemaField(
-                                    name=self.source.metadata.schema or self.source_db.default_metadata.schema,
-                                    type='schema',
+                                    name=f'schema: {self.source.metadata.schema or self.source_db.default_metadata.schema}',
+                                    type='string',
                                 ),
                                 SchemaField(
-                                    name=self.source.metadata.database or self.source_db.default_metadata.database,
-                                    type='database',
+                                    name=f'database: {self.source.metadata.database or self.source_db.default_metadata.database}',
+                                    type='string',
                                 ),
+                                *[SchemaField(name=col.name, type=str(col.type)) for col in self.source.columns],
                             ]
                         ),
                         "dataSource": DataSourceDatasetFacet(
                             name=self.source_table, uri=self.source.openlineage_dataset_uri()
                         ),
-                        "sourceQuery": SqlJobFacet(
-                            query=self.sql,
-                        ),
-                        # "outputStatistics": OutputStatisticsOutputDatasetFacet(
-                        #     rowCount=self._row_count,
-                        # ),
                     },
                 ),
             ]
-        # self.log.info(f'TableTransfer.get_openlineage_facets_on_complete() input_dataset: {input_dataset}')
 
         output_dataset: list[Dataset] = []
         if self.destination and self.destination.openlineage_emit_temp_table_event():  # pragma: no cover
@@ -195,28 +249,30 @@ class TableTransfer(GenericTransfer):
                         "schema": SchemaDatasetFacet(
                             fields=[
                                 SchemaField(
-                                    name=self.destination.metadata.schema or self.dest_db.default_metadata.schema,
-                                    type='schema',
+                                    name=f'schema: {self.destination.metadata.schema or self.dest_db.default_metadata.schema}',
+                                    type='string',
                                 ),
                                 SchemaField(
-                                    name=self.destination.metadata.database or self.dest_db.default_metadata.database,
-                                    type='database',
+                                    name=f'database: {self.destination.metadata.database or self.dest_db.default_metadata.database}',
+                                    type='string',
                                 ),
+                                *[SchemaField(name=col.name, type=str(col.type)) for col in self.destination.columns],
                             ]
                         ),
                         "dataSource": DataSourceDatasetFacet(
                             name=self.destination_table, uri=self.destination.openlineage_dataset_uri()
                         ),
-                        "stats": OutputStatisticsOutputDatasetFacet(
+                        "outputStatistics": OutputStatisticsOutputDatasetFacet(
                             rowCount=self._row_count,
                         ),
                     },
                 ),
             ]
-        # self.log.info(f'TableTransfer.get_openlineage_facets_on_complete() output_dataset: {output_dataset}')
 
         run_facets: dict[str, BaseFacet] = {}
-        job_facets: dict[str, BaseFacet] = {}
+        job_facets: dict[str, BaseFacet] = {
+            "sql": SqlJobFacet(query=str(self.sql))
+        }
         return OperatorLineage(
             inputs=input_dataset, outputs=output_dataset, run_facets=run_facets, job_facets=job_facets
         )
@@ -251,24 +307,22 @@ class ChangedTableTransfer(TableTransfer):
 
         self.destination_sql: str = dest_sql
 
-    def _compare_datasets(self, stop_on_first_diff: bool, logger: logging.Logger | None = None):
+    def _compare_datasets(self, src_conn: SqlaConnection, dest_conn: SqlaConnection, stop_on_first_diff: bool, logger: logging.Logger | None = None):
         """ Internal - compare source and target dictionaries """
 
         logger = logger or self.log
-        src = DbApiHook.get_hook(self.source_conn_id)
-        dest = DbApiHook.get_hook(self.destination_conn_id)
 
         logger.info(f'Executing: {self.sql}')
-        df_src = src.get_pandas_df(self.sql)
+        df_src = pd.read_sql(self.sql, src_conn)
         logger.info(f'Executing: {self.destination_sql}')
-        df_trg = dest.get_pandas_df(self.destination_sql)
+        df_trg  = pd.read_sql(self.destination_sql, dest_conn)
 
         return compare_datasets(df_src, df_trg, stop_on_first_diff=stop_on_first_diff, logger=logger)
 
     def execute(self, context: Context):
         """ Execute operator """
         self._pre_execute(context)
-        if not self._compare_datasets(stop_on_first_diff=True):
+        if not self._compare_datasets(self.source_db.connection, self.dest_db.connection, stop_on_first_diff=True):
             return super().execute(context)
 
 class OdsTableTransfer(ChangedTableTransfer):
@@ -281,7 +335,7 @@ class OdsTableTransfer(ChangedTableTransfer):
     """
     ui_color = "#78f07c"
 
-    def _save_data(self, data: pd.DataFrame, modified: pd.Timestamp, deleted: pd.Timestamp | None, category: str) -> None:
+    def _save_data(self, data: pd.DataFrame, conn: SqlaConnection, modified: pd.Timestamp, deleted: pd.Timestamp | None, category: str) -> None:
         if data is not None and not data.empty:
             if self.session is not None:
                 data.drop(columns=set(['session_id', '_modified', '_deleted']) & set(data.columns), inplace=True)
@@ -293,8 +347,14 @@ class OdsTableTransfer(ChangedTableTransfer):
                 data['_deleted'] = deleted
 
             self.log.info(f'Saving {data.shape[0]} {category} records to {self.destination_table}')
-            self.dest_db.load_pandas_dataframe_to_table(data, self.destination, if_exists='append')
-
+            data.to_sql(
+                self.destination.name,
+                con=conn,
+                schema=self.destination.metadata.schema if self.destination.metadata else None,
+                if_exists='append',
+                method='multi',
+                index=False,
+            )
             self._row_count += len(data)
 
     def execute(self, context: Context):
@@ -303,12 +363,24 @@ class OdsTableTransfer(ChangedTableTransfer):
         # All the checks
         self._pre_execute(context)
 
+        # Verify target table structure
+        n_col = 0
+        if self.session is not None:
+            if self.destination.columns[n_col].name.lower() != 'session_id':
+                raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: `session_id` missing or at improper place')
+            n_col += 1
+        if self.destination.columns[n_col].name.lower() != '_modified':
+            raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: `_modified` column missing or at improper place')
+        if self.destination.columns[n_col+1].name.lower() != '_deleted':
+            raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: `_deleted` column missing or at improper place')
+
         # compare datasets and save delta frames to target (new/modified/deleted)
         self._row_count = 0
-        dfn, dfm, dfd = self._compare_datasets(stop_on_first_diff=False)
-        self._save_data(dfn, pd.Timestamp.utcnow(), pd.NaT, 'new')
-        self._save_data(dfm, pd.Timestamp.utcnow(), pd.NaT, 'modified')
-        self._save_data(dfd, pd.Timestamp.utcnow(), pd.Timestamp.utcnow(), 'deleted')
+        with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn, dest_conn.begin():
+            dfn, dfm, dfd = self._compare_datasets(src_conn, dest_conn, stop_on_first_diff=False)
+            self._save_data(dfn, dest_conn, pd.Timestamp.utcnow(), pd.NaT, 'new')
+            self._save_data(dfm, dest_conn, pd.Timestamp.utcnow(), pd.NaT, 'modified')
+            self._save_data(dfd, dest_conn, pd.Timestamp.utcnow(), pd.Timestamp.utcnow(), 'deleted')
 
 class ActualsTableTransfer(TableTransfer):
     """
@@ -326,11 +398,13 @@ class ActualsTableTransfer(TableTransfer):
         session: ETLSession | None = None,
         as_ods: bool = False,
         keep_temp_table: bool = False,
+        replace_data: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(source_table=source_table, destination_table=destination_table, session=session, **kwargs)
         self.as_ods = as_ods
         self.keep_temp_table = keep_temp_table
+        self.replace_data = replace_data
 
     def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
@@ -354,90 +428,112 @@ class ActualsTableTransfer(TableTransfer):
         # All the checks
         self._pre_execute(context)
 
-        # Get the hooks to setup the transfer
-        src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
-        dest: DbApiHook = DbApiHook.get_hook(self.destination_conn_id)
+        # Verify structure
+        if self.as_ods:
+            # Check source and target meet the ODS requirements
+            if not [c for c in self.source.columns if c.name == '_deleted']:
+                raise AirflowFailException(f'Source table {self.source_table} does not have `_deleted` column required for ODS-style transfer')
+            if not [c for c in self.destination.columns if c.name == '_deleted']:
+                raise AirflowFailException(f'Target table {self.destination_table} does not have `_deleted` column required for ODS-style transfer')
 
-        with src.get_sqlalchemy_engine().connect() as src_conn, dest.get_sqlalchemy_engine().connect() as dest_conn:
-            # Load source and target table structures using SQL alchemy
-            src_meta = SqlaMetadata(src_conn, schema=self.source.metadata.schema if self.source.metadata else None)
-            src_meta.reflect(only=[self.source.name])
-            src_sqla_table = src_meta.tables[self.source_table]
+        # Build a source-to-target column mapping
+        col_map = {}
+        id_cols = []
+        for src_col in self.source.columns:
+            dest_cols = [c for c in self.destination.columns if c.name.lower() == src_col.name.lower()]
+            if not dest_cols:
+                self.log.warning(f'Column {src_col.name} was not found in {self.destination_table} table, skipping')
+            else:
+                # If a column is PK, store it to use in `on conflict` statement part
+                col_map[src_col.name] = dest_cols[0].name
+                if dest_cols[0].primary_key:
+                    id_cols.append(dest_cols[0].name)
 
-            dest_meta = SqlaMetadata(dest_conn, schema=self.destination.metadata.schema if self.destination.metadata else None)
-            dest_meta.reflect(only=[self.destination.name])
-            dest_sqla_table = dest_meta.tables[self.destination_table]
+        # Check there are any ID columns on target
+        if not id_cols:
+            raise AirflowFailException(f'Could not detect primary key on {self.destination_table}')
 
-            if self.as_ods:
-                # Check source and target meet the ODS requirements
-                if '_deleted' not in src_sqla_table.columns:
-                    raise AirflowFailException(f'Source table {self.source_table} does not have `_deleted` column required for ODS-style transfer')
-                if '_deleted' not in dest_sqla_table.columns:
-                    raise AirflowFailException(f'Target table {self.destination_table} does not have `_deleted` column required for ODS-style transfer')
+        # Wrap data selection query into `select distinct on` in order to avoid having multiple IDs error
+        # Also, replace `t.*` with exact columns list and proper session_id
+        id_cols_str = ",".join(id_cols)
+        all_cols_str = f'{self.session.session_id} as session_id, ' + ",".join([col for col in col_map if col != 'session_id'])
+        sql = f'select distinct on ({id_cols_str}) {all_cols_str} from ({self.sql}) q order by {id_cols_str}, q.session_id desc'
+        self.log.info(f'Source extraction SQL:\n{sql}')
 
-            # Build a source-to-target column mapping
-            col_map = {}
-            id_cols = []
-            for src_col in src_sqla_table.columns:
-                if (dest_col := dest_sqla_table.columns.get(src_col.name)) is None:
-                    self.log.warning(f'Column {src_col.name} does not exist in {self.destination_table} table, skipping')
-                else:
-                    # If a column is PK, store it to use in `on conflict` statement part
-                    col_map[src_col.name] = dest_col.name
-                    if dest_col.primary_key:
-                        id_cols.append(dest_col.name)
+        # Check whether the hooks point to the same database
+        same_db = is_same_database_uri(self.source_hook.get_uri(), self.dest_hook.get_uri())
 
-            # Check there are any ID columns on target
-            if not id_cols:
-                raise AirflowFailException(f'Could not detect primary key on {self.destination_table}')
-
-            # Wrap data selection query into `select distinct on` in order to avoid having multiple IDs error
-            id_cols_str = ",".join(id_cols)
-            sql = f'select distinct on ({id_cols_str}) * from ({self.sql}) q order by {id_cols_str}, session_id desc'
-            self.log.info(f'Source extraction SQL:\n{sql}')
-
-            # Check whether the hooks point to the same database
-            same_db = is_same_database_uri(src.get_uri(), dest.get_uri())
-
-            # Upload source data to temporary table in destination database
-            temp_table = Table(metadata=self.destination.metadata, temp=True)
+        # Update/merge
+        with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn, dest_conn.begin():
             if same_db:
-                # Source and destination tables are in the same database, use `insert` query
-                # Query modifier is required to set proper session_id (source table already contains this column)
+                # Source and destination tables are in the same database, 
                 self.log.info(f'Source and destination tables are in the same database')
-                qm = None if not self.session else \
-                    QueryModifier(post_queries=[f'update {self.dest_db.get_table_qualified_name(temp_table)} set session_id={self.session.session_id}'])
-                self.dest_db.create_table_from_select_statement(sql, temp_table, query_modifier=qm)
+
+                # If `replace_data` is set, purge target table
+                if self.replace_data:
+                    dest_conn.execute(text(f'delete from {self.destination_table}'))
+
+                # Merge into target table directly from sql
+                self._row_count = postgres_merge_tables(
+                    conn=dest_conn,
+                    source_table=None,
+                    target_table=self.destination,
+                    source_to_target_columns_map=col_map,
+                    target_conflict_columns=id_cols,
+                    source_sql=sql,
+                    if_conflicts='update'
+                )
+                self.log.info(f'{self._row_count} records transferred')
+
             else:
                 # Source and destination tables are in different databases
-                self.log.info(f'Source and destination tables are in different databases, using in-memory transfer')
-                df = src.get_pandas_df(sql)
+                temp_table = Table(metadata=self.destination.metadata, temp=True)
+                self.log.info(f'Source and destination tables are in different databases, transferring via temporary table')
+
+                # Load data from source table
+                data = pd.read_sql(sql, src_conn)
+                if data is None or data.empty:
+                    self.log.info('No records to transfer')
+                    return
+                
                 if self.session:
-                    df['session_id'] = self.session.session_id
+                    data['session_id'] = self.session.session_id
                     col_map['session_id'] = 'session_id'
 
                 # Temp table has to be created 1st, otherwise it might be column types mismatch
-                temp_sqla_table = SqlaTable(temp_table.name, dest_meta, *([c.copy() for c in src_sqla_table.columns]))
-                dest_meta.create_all(dest_conn, tables=[temp_sqla_table], checkfirst=False)
-                self.dest_db.load_pandas_dataframe_to_table(df, temp_table, if_exists='append')
+                temp_sqla_table = SqlaTable(temp_table.name, temp_table.sqlalchemy_metadata, *([c.copy() for c in self.source.columns]))
+                self.destination.sqlalchemy_metadata.create_all(bind=dest_conn, tables=[temp_sqla_table], checkfirst=False)
 
-        # Count rows
-        self._row_count = self.dest_db.row_count(temp_table)
-        self.log.info(f'{self._row_count} records to be transferred')
+                try:
+                    # Save data to temporary table
+                    data.to_sql(
+                        temp_table.name,
+                        con=dest_conn,
+                        schema=temp_table.metadata.schema if temp_table.metadata else None,
+                        if_exists='append',
+                        method='multi',
+                        index=False,
+                    )
 
-        # Merge temporary and target tables
-        try:
-            self.log.info(f'Merging from {temp_table.name} to {self.destination_table}')
-            self.dest_db.merge_table(
-                source_table=temp_table,
-                target_table=self.destination,
-                source_to_target_columns_map=col_map,
-                target_conflict_columns=id_cols,
-                if_conflicts='update',
-            )
-        finally:
-            if not self.keep_temp_table:
-                self.dest_db.drop_table(temp_table)
+                    # If `replace_data` is set, purge target table
+                    if self.replace_data:
+                        dest_conn.execute(text(f'delete from {self.destination_table}'))
+
+                    # Merge temporary and target tables
+                    self.log.info(f'Merging from {self.dest_db.get_table_qualified_name(temp_table)} to {self.destination_table}')
+                    self._row_count = postgres_merge_tables(
+                        conn=dest_conn,
+                        source_table=temp_table,
+                        target_table=self.destination,
+                        source_to_target_columns_map=col_map,
+                        target_conflict_columns=id_cols,
+                        if_conflicts='update'
+                    )
+                    self.log.info(f'{self._row_count} records transferred')
+
+                finally:
+                    if not self.keep_temp_table:
+                        self.dest_db.drop_table(temp_table)
 
 class TimedTableTransfer(ChangedTableTransfer):
     """
@@ -445,7 +541,6 @@ class TimedTableTransfer(ChangedTableTransfer):
     Implements timed dictionary update behaviour.
     Requiures `xxx_a` view to exist both on source and target.
     """
-
     ui_color = "#3cf07e"
 
     def execute(self, context: Context):
@@ -455,30 +550,36 @@ class TimedTableTransfer(ChangedTableTransfer):
         self._pre_execute(context)
 
         # Get source and target data
-        src: DbApiHook = DbApiHook.get_hook(self.source_conn_id)
-        dest: DbApiHook = DbApiHook.get_hook(self.destination_conn_id)
+        with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn, dest_conn.begin():
+            self.log.info(f'Executing: {self.sql}')
+            df_src = pd.read_sql(self.sql, src_conn)
+            self.log.info(f'Executing: {self.destination_sql}')
+            df_trg = pd.read_sql(self.destination_sql, dest_conn)
 
-        self.log.info(f'Executing: {self.sql}')
-        df_src = src.get_pandas_df(self.sql)
-        self.log.info(f'Executing: {self.destination_sql}')
-        df_trg = dest.get_pandas_df(self.destination_sql)
+            # Get the deltas
+            df_opening, df_closing = compare_timed_dict(df_src, df_trg)
+            if (df_opening is None or df_opening.empty) and (df_closing is None or df_closing.empty):
+                self.log.info('No changes detected, nothing to do')
+                return
 
-        # Get the deltas
-        df_opening, df_closing = compare_timed_dict(df_src, df_trg)
-        if (df_opening is None or df_opening.empty) and (df_closing is None or df_closing.empty):
-            self.log.info('No changes detected, nothing to do')
-            return
+            # Update records to be closed
+            if df_closing is not None and not df_closing.empty:
+                update_sql_template = get_predefined_template('table_timed_update.sql')
+                update_sql = update_sql_template.render(destination_table=self.destination_table)
+                update_params = df_closing.to_dict(orient='list')
+                dest_conn.execute(text(update_sql).execution_options(autocommit=True), update_params)
 
-        # Update records to be closed
-        if df_closing is not None and not df_closing.empty:
-            update_sql_template = get_predefined_template('table_timed_update.sql')
-            update_sql = update_sql_template.render(destination_table=self.destination_table)
-            update_params = df_closing.to_dict(orient='list')
-            self.dest_db.run_single_sql_query(update_sql, parameters=update_params)
+            # Insert new records
+            if df_opening is not None and not df_opening.empty:
+                df_opening.to_sql(
+                    self.destination.name,
+                    con=dest_conn,
+                    schema=self.destination.metadata.schema if self.destination.metadata else None,
+                    if_exists='append',
+                    method='multi',
+                    index=False,
+                )
 
-        # Insert new records
-        if df_opening is not None and not df_opening.empty:
-            self.dest_db.load_pandas_dataframe_to_table(df_opening, self.destination, if_exists='append')
 
 class CompareTableOperator(ChangedTableTransfer):
     """
@@ -491,7 +592,7 @@ class CompareTableOperator(ChangedTableTransfer):
         """ Execute operator """
         logger = logging.getLogger(f'compare_tables_logger')
         logger.setLevel(logging.DEBUG)
-        if not self._compare_datasets(stop_on_first_diff=True, logger=logger):
+        if not self._compare_datasets(self.source_db.connection, self.dest_db.connection, stop_on_first_diff=True, logger=logger):
             raise AirflowFailException(f'Differences detected')
 
 def load_table(

@@ -19,7 +19,7 @@ from airflow.exceptions import AirflowException, AirflowFailException
 from airflow.settings import TIMEZONE
 from attr import define, field
 from astro import sql as aql
-from typing import Optional, Union, Any, Tuple, cast
+from typing import Any, Tuple, cast
 
 from ..utils.datetime_local import datetime_to_tz
 from ..utils.template import get_predefined_template
@@ -116,9 +116,9 @@ class OpenSessionOperator(BaseOperator):
 
     def __init__(self,
                  *,
-                 source_conn_id: Optional[str] = 'default',
-                 destination_conn_id: Optional[str] = 'default',
-                 session_conn_id: Optional[str] = None,
+                 source_conn_id: str = 'default',
+                 destination_conn_id: str = 'default',
+                 session_conn_id: str = None,
                  **kwargs):
 
         task_id = kwargs.pop('task_id', 'open-session')
@@ -164,7 +164,7 @@ class CloseSessionOperator(BaseOperator):
 
     def __init__(self,
                  *,
-                 session: Union[ETLSession, XComArg, None] = None,
+                 session: ETLSession | XComArg | None = None,
                  **kwargs):
 
         task_id = kwargs.pop('task_id', 'close-session')
@@ -196,8 +196,8 @@ class CloseSessionOperator(BaseOperator):
 def open_session(
         source_conn_id: str, 
         destination_conn_id: str, 
-        session_conn_id: Optional[str] = None, 
-        dag: Optional[DAG] = None,
+        session_conn_id: str | None = None, 
+        dag: DAG | None = None,
         **kwargs) -> XComArg:
     """ Opens a new ETL session.
 
@@ -299,9 +299,9 @@ def open_session(
         **kwargs))
 
 def close_session(
-        session: Union[ETLSession, XComArg], 
-        upstream: Optional[Any] = None,
-        dag: Optional[DAG] = None,
+        session: ETLSession | XComArg, 
+        upstream: Any | None = None,
+        dag: DAG | None = None,
         **kwargs) -> XComArg:
     """ Closes the ETL session.
 
@@ -341,7 +341,7 @@ def close_session(
     op.set_upstream(upstream)
     return XComArg(op)
 
-def get_current_session(context: Optional[Context] = None) -> ETLSession:
+def get_current_session(context: Context | None = None) -> ETLSession:
     """ Retrieves current session from XCom.
     
     Args:
@@ -353,8 +353,8 @@ def get_current_session(context: Optional[Context] = None) -> ETLSession:
     context = context or get_current_context()
     return context['ti'].xcom_pull(key='session')
 
-def ensure_session(session: Optional[Union[ETLSession, XComArg]], 
-                   context: Optional[Context] = None) -> ETLSession:
+def ensure_session(session: ETLSession | XComArg | None, 
+                   context: Context | None = None) -> ETLSession:
     """ Returns current session. If a placeholder object returned by `open_session` is passed in,
     retrieves actual session from XCom. 
     
@@ -378,7 +378,7 @@ def ensure_session(session: Optional[Union[ETLSession, XComArg]],
 _TS_REGX = r'\d{4}-([0]\d|1[0-2])-([0-2]\d|3[01])(T\d{2}:\d{2}:\d{2})?'
 _FULL_REGX = r'\[\d{4}-([0]\d|1[0-2])-([0-2]\d|3[01])(T\d{2}:\d{2}:\d{2})?,\s*\d{4}-([0]\d|1[0-2])-([0-2]\d|3[01])(T\d{2}:\d{2}:\d{2})?]'
 
-def get_session_period(context: Optional[Context] = None) -> Tuple[str, str]:
+def get_session_period(context: Context | None = None) -> Tuple[str, str]:
     """ Calculates ETL session loading period.
     
     This function is used when a new session is created. It recognizes a "period"

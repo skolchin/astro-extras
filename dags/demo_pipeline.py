@@ -15,9 +15,9 @@ source_ods_table = Table('ods_data', 'source_db')
 stage_types_table = Table('types', 'stage_db', metadata=Metadata(schema='stage'))
 stage_data_table = Table('table_data', 'stage_db', metadata=Metadata(schema='stage'))
 stage_ods_table = Table('ods_data', 'stage_db', metadata=Metadata(schema='stage'))
-actuals_types_table = Table('types', 'actuals_db', metadata=Metadata(schema='actuals'))
-actuals_data_table = Table('table_data', 'actuals_db', metadata=Metadata(schema='actuals'))
-actuals_ods_table = Table('ods_data', 'actuals_db', metadata=Metadata(schema='actuals'))
+actuals_types_table = Table('types', 'stage_db', metadata=Metadata(schema='actuals'))
+actuals_data_table = Table('table_data', 'stage_db', metadata=Metadata(schema='actuals'))
+actuals_ods_table = Table('ods_data', 'stage_db', metadata=Metadata(schema='actuals'))
 dwh_dim_types_table = Table('dim_types', 'dwh_db', metadata=Metadata(schema='dwh'))
 dwh_data_fact_table = Table('data_facts', 'dwh_db', metadata=Metadata(schema='dwh'))
 
@@ -50,14 +50,14 @@ with DAG(
     schedule=[stage_types_table, stage_data_table, stage_ods_table],
     catchup=False,
     tags=['demo', 'pipeline'],
-) as dag, ETLSession('stage_db', 'actuals_db', 'stage_db') as session:
+) as dag, ETLSession('stage_db', 'stage_db', 'stage_db') as session:
     """ Stage-to-actuals data upload DAG """
 
     transfer_actuals_tables(
         [stage_types_table, stage_data_table], 
         [actuals_types_table, actuals_data_table], 
         session=session,
-        keep_temp_table=False) >> \
+        keep_temp_table=True) >> \
     transfer_actuals_table(
         stage_ods_table, 
         actuals_ods_table, 
