@@ -6,7 +6,6 @@
 import logging
 import pandas as pd
 import warnings
-from functools import cached_property
 from sqlalchemy import text, Table as SqlaTable
 from sqlalchemy.engine.base import Connection as SqlaConnection
 
@@ -78,44 +77,40 @@ class TableTransfer(GenericTransfer):
         **kwargs,
     ) -> None:
 
+        # source and target databases
         self.source_db = create_database(source_table.conn_id)
         self.dest_db = create_database(destination_table.conn_id)
-        source_table = adjust_table_name_case(source_table, self.source_db)
-        destination_table = adjust_table_name_case(destination_table, self.dest_db)
-        sql: str = kwargs.pop('sql', self._get_sql(source_table, self.source_db, session))
 
-        task_id = kwargs.pop('task_id', f'transfer-{source_table.name}')
+        # source and target AstroSDK tables
+        # temporary solution: adjust table name case to support DB requirements
+        self.source = adjust_table_name_case(source_table, self.source_db)
+        self.destination = adjust_table_name_case(destination_table, self.dest_db)
+
+        # source and target fully-qualified table names
+        # self.destination_table will be set by `super().__init__()`
+        self.source_table = self.source_db.get_table_qualified_name(self.source)
+
+        # task_id would be 'transfer-<schema>_<table>'
+        task_id = kwargs.pop('task_id', f'transfer-{self.source_table.replace(".", "_")}')
+
+        # sql is either passed in by the caller or rendered from template
+        sql = kwargs.pop('sql', self._get_sql(self.source, self.source_db, session))
+
         super().__init__(task_id=task_id,
                          sql=sql,
-                         destination_table=self.dest_db.get_table_qualified_name(destination_table),
-                         source_conn_id=source_table.conn_id,
-                         destination_conn_id=destination_table.conn_id,
+                         destination_table=self.dest_db.get_table_qualified_name(self.destination),
+                         source_conn_id=self.source.conn_id,
+                         destination_conn_id=self.destination.conn_id,
                          **kwargs)
 
-        self.source = source_table
-        self.source_table = self.source_db.get_table_qualified_name(self.source)
-        self.destination = destination_table
-        # self.destination_table is set by super().__init__()
         self.session = session
         self.in_memory_transfer = in_memory_transfer
 
         # flag to prevent multiple _pre_execute() calls
         self._pre_execute_called: bool = False
 
-        # statistics for openlineage
+        # statistics for lineage
         self._row_count: int = 0
-
-    @cached_property
-    def source_hook(self) -> DbApiHook:
-        return DbApiHook.get_hook(self.source_conn_id)
-    
-    @cached_property
-    def dest_hook(self) -> DbApiHook:
-        return DbApiHook.get_hook(self.destination_conn_id)
-
-    @cached_property
-    def dest_hook(self) -> DbApiHook:
-        return DbApiHook.get_hook(self.destination_conn_id)
 
     def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
@@ -417,9 +412,8 @@ class ActualsTableTransfer(TableTransfer):
             full_name = f'({sql})'
 
         # Get template SQL from package resources
-        # The template defines `select` query which takes data from 
-        # source actual data view (<source_table>_a) limited 
-        # for successfull sessions with the same period as this operator has
+        # The template defines `select` query which takes data from source limited 
+        # to one's loaded with successfull sessions with the same loading period as this operator has
         template = get_predefined_template('table_actuals_select.sql')
         return template.render(source_table=full_name)
 
@@ -462,7 +456,7 @@ class ActualsTableTransfer(TableTransfer):
         self.log.info(f'Source extraction SQL:\n{sql}')
 
         # Check whether the hooks point to the same database
-        same_db = is_same_database_uri(self.source_hook.get_uri(), self.dest_hook.get_uri())
+        same_db = is_same_database_uri(self.source_db.hook.get_uri(), self.dest_db.hook.get_uri())
 
         # Update/merge
         with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn, dest_conn.begin():
