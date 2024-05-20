@@ -1056,12 +1056,16 @@ def transfer_actuals_tables(
         num_parallel: int = 1,
         session: XComArg | ETLSession | None = None,
         as_ods: bool = False,
+        keep_temp_table: bool = False,
+        replace_data: bool = False,
         **kwargs) -> TaskGroup:
 
     """ Transfer multiple tables from stage to actuals.
     """
     assert session is not None, 'Transfer to actuals requires ETL session'
     kwargs['as_ods'] = as_ods
+    kwargs['keep_temp_table'] = keep_temp_table
+    kwargs['replace_data'] = replace_data
 
     return _do_transfer_tables(
         op_cls=ActualsTableTransfer,
