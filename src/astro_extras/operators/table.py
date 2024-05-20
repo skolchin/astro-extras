@@ -1027,6 +1027,8 @@ def transfer_actuals_table(
         destination_conn_id: str | None = None,
         session: XComArg | ETLSession = None,
         as_ods: bool = False,
+        keep_temp_table: bool = False,
+        replace_data: bool = False,
         **kwargs) -> XComArg:
     
     """ Transfer table from stage to actuals.
@@ -1037,6 +1039,8 @@ def transfer_actuals_table(
     """
     assert session is not None, 'Transfer to actuals requires ETL session'
     kwargs['as_ods'] = as_ods
+    kwargs['keep_temp_table'] = keep_temp_table
+    kwargs['replace_data'] = replace_data
 
     return _do_transfer_table(
         op_cls=ActualsTableTransfer,
