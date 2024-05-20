@@ -9,15 +9,15 @@ from astro.sql.table import Table, Metadata
 from astro_extras import *
 
 # Forward table declaration
-source_types_table = Table('types', 'source_db')
+source_types_table = Table('TYPES', 'source_db')
 source_data_table = Table('table_data', 'source_db')
 source_ods_table = Table('ods_data', 'source_db')
 stage_types_table = Table('types', 'stage_db', metadata=Metadata(schema='stage'))
-stage_data_table = Table('table_data', 'stage_db', metadata=Metadata(schema='stage'))
-stage_ods_table = Table('ods_data', 'stage_db', metadata=Metadata(schema='stage'))
+stage_data_table = Table('TABLE_DATA', 'stage_db', metadata=Metadata(schema='stage'))
+stage_ods_table = Table('ods_data', 'stage_db', metadata=Metadata(schema='STAGE'))
 actuals_types_table = Table('types', 'stage_db', metadata=Metadata(schema='actuals'))
 actuals_data_table = Table('table_data', 'stage_db', metadata=Metadata(schema='actuals'))
-actuals_ods_table = Table('ods_data', 'stage_db', metadata=Metadata(schema='actuals'))
+actuals_ods_table = Table('ODS_DATA', 'stage_db', metadata=Metadata(schema='actuals'))
 dwh_dim_types_table = Table('dim_types', 'dwh_db', metadata=Metadata(schema='dwh'))
 dwh_data_fact_table = Table('data_facts', 'dwh_db', metadata=Metadata(schema='dwh'))
 

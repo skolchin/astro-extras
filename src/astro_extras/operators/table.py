@@ -22,11 +22,10 @@ from astro import sql as aql
 from astro.databases import create_database
 from astro.sql.table import BaseTable, Table
 from astro.databases.base import BaseDatabase
-from astro.query_modifier import QueryModifier
 from astro.airflow.datasets import kwargs_with_datasets
 
 from .session import ETLSession, ensure_session
-from ..utils.utils import ensure_table, schedule_ops, is_same_database_uri
+from ..utils.utils import ensure_table, schedule_ops, is_same_database_uri, adjust_table_name_case
 from ..utils.template import get_template, get_template_file, get_predefined_template
 from ..utils.data_compare import compare_datasets, compare_timed_dict
 from ..utils.postgres_sql import postgres_merge_tables
@@ -81,6 +80,8 @@ class TableTransfer(GenericTransfer):
 
         self.source_db = create_database(source_table.conn_id)
         self.dest_db = create_database(destination_table.conn_id)
+        source_table = adjust_table_name_case(source_table, self.source_db)
+        destination_table = adjust_table_name_case(destination_table, self.dest_db)
         sql: str = kwargs.pop('sql', self._get_sql(source_table, self.source_db, session))
 
         task_id = kwargs.pop('task_id', f'transfer-{source_table.name}')
