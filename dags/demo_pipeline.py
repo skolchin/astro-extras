@@ -10,7 +10,7 @@ from astro_extras import *
 
 # Forward table declaration
 source_types_table = Table('TYPES', 'source_db')
-source_data_table = Table('table_data', 'source_db')
+source_data_table = Table('table_data', 'source_db', metadata=Metadata(schema='public'))
 source_ods_table = Table('ods_data', 'source_db')
 stage_types_table = Table('types', 'stage_db', metadata=Metadata(schema='stage'))
 stage_data_table = Table('TABLE_DATA', 'stage_db', metadata=Metadata(schema='stage'))

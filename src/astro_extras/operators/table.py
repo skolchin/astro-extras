@@ -117,13 +117,13 @@ class TableTransfer(GenericTransfer):
 
         # Check whether a template SQL exists for given table under dags\templates\<dag_id>
         # Actual query will be loaded by Airflow templating itself
-        if (sql_file := get_template_file(table.name, '.sql')):
+        full_name = db.get_table_qualified_name(table) + (suffix or '')
+        if (sql_file := get_template_file(full_name, '.sql')) or (sql_file := get_template_file(table.name, '.sql')) :
             self.log.info(f'Using template file {sql_file}')
             return sql_file
 
         # Nope, load an SQL from package resources substituting template fields manually
         # SQL file names are fixed according to whether we do run under ETL session or not
-        full_name = db.get_table_qualified_name(table) + (suffix or '')
         template_name = 'table_transfer_nosess.sql' if not session else 'table_transfer_sess.sql'
         template = get_predefined_template(template_name)
         return template.render(source_table=full_name)
@@ -405,15 +405,10 @@ class ActualsTableTransfer(TableTransfer):
     def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
 
-        # If an SQL template is defined for given table, wrap it as a subquery,
-        # so resulting query would be like `select * from (select * from ...)`
-        full_name = db.get_table_qualified_name(table)
-        if (sql := get_template(table.name, '.sql', fail_if_not_found=False)):
-            full_name = f'({sql})'
-
         # Get template SQL from package resources
         # The template defines `select` query which takes data from source limited 
         # to one's loaded with successfull sessions with the same loading period as this operator has
+        full_name = db.get_table_qualified_name(table)
         template = get_predefined_template('table_actuals_select.sql')
         return template.render(source_table=full_name)
 
