@@ -3,10 +3,14 @@
 
 """ PyTest fixtures """
 
+
 import os
 import pytest
+
 from pytest_docker.plugin import get_cleanup_command
 from confsupport import *
+
+from sqlalchemy import MetaData
 
 def pytest_addoption(parser):
     parser.addoption('--keep', action='store_true', default=False, 
@@ -70,11 +74,35 @@ def airflow(docker_ip, docker_services):
     return url
 
 @pytest.fixture(scope='session')
-def source_db(db_credentials, docker_ip, docker_services):
+def source_db(db_credentials, docker_ip, docker_services, pytestconfig):
     """ Makes a source database connection as SQLA engine """
-    return get_db_engine('source_db', db_credentials, docker_ip, docker_services)
+    dir = pytestconfig.invocation_params.dir / 'init_source_db'
+    logger.info(f'Initalizing source database using scripts from {dir} directory')
+
+    engine = get_db_engine('source_db', db_credentials, docker_ip, docker_services)
+    init_database(engine, dir)
+    return engine
 
 @pytest.fixture(scope='session')
-def target_db(db_credentials, docker_ip, docker_services):
+def target_db(db_credentials, docker_ip, docker_services, pytestconfig):
     """ Makes a target database connection as SQLA engine """
-    return get_db_engine('target_db', db_credentials, docker_ip, docker_services)
+    dir = pytestconfig.invocation_params.dir / 'init_target_db'
+    logger.info(f'Initalizing target database using scripts from {dir} directory')
+
+    engine = get_db_engine('target_db', db_credentials, docker_ip, docker_services)
+    init_database(engine, dir)
+    return engine
+
+@pytest.fixture(scope='function')
+def src_metadata(source_db, schema='public'):
+    """ Creates a SQLAlchemy MetaData object for the source database with a specified schema """
+    metadata = MetaData()
+    metadata.reflect(bind=source_db, schema=schema)
+    return metadata
+
+@pytest.fixture(scope='function')
+def tgt_metadata(target_db, schema='public'):
+    """ Creates a SQLAlchemy MetaData object for the target database with a specified schema """
+    metadata = MetaData()
+    metadata.reflect(bind=target_db, schema=schema)
+    return metadata

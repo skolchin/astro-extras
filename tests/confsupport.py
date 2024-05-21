@@ -8,9 +8,9 @@ import os
 import time
 import requests
 import logging
-
-from requests.exceptions import ConnectionError
+from pathlib import Path
 from sqlalchemy import create_engine
+from requests.exceptions import ConnectionError
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,19 @@ def get_db_engine(database, db_credentials, docker_ip, docker_services):
     port = docker_services.port_for("postgres", 5432)
     url = f"postgresql://{uname}:{psw}@{docker_ip}:{port}/{database}"
     return create_engine(url)
+
+def init_database(db_engine, init_path):
+    """ Initializes database by running all SQL scripts in given directory """
+    init_path = Path(init_path)
+    if not init_path.exists():
+        return
+    assert init_path.is_dir(), f'Path {init_path} is not a directory!'
+
+    with db_engine.connect() as conn:
+        for fn in Path(init_path).glob('*.sql'):
+            with open(fn, 'rt') as fp:
+                sql = fp.read()
+                conn.execute(sql)
 
 def _get_airflow_log_files(dag_id, run_id, root_dir):
     clear = lambda s: re.sub(r'\W', '', s)

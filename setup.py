@@ -12,7 +12,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="astro_extras",
-    version="0.0.13",
+    version="0.1.1",
     author="Kol",
     author_email="skolchin@gmail.com",
     description="Additional Astro SDK operators",
@@ -27,6 +27,8 @@ setuptools.setup(
     ],
     package_dir={"": "src"},
     packages=['astro_extras', 'astro_extras.hooks', 'astro_extras.operators', 'astro_extras.sensors', 'astro_extras.utils'],
+    package_data = {"": ["templates/*.sql"]},
+    include_package_data=True,
     python_requires=">=3.10",
     install_requires=requirements,
     setup_requires=['setuptools', 'wheel'],

@@ -4,18 +4,18 @@
 """ Template utility functions """
 
 import os
+import jinja2
+import importlib.resources
 from airflow.models import DAG
 from airflow.models.dag import DagContext
 from airflow.configuration import conf
 from airflow.exceptions import AirflowFailException
 
-from typing import Optional, Union
-
 def get_template_file(
         template: str, 
-        ext: Optional[str] = '.sql', 
-        dag: Optional[DAG] = None,
-        fail_if_not_found: Optional[bool] = False) -> Optional[str]:
+        ext: str = '.sql', 
+        dag: DAG | None = None,
+        fail_if_not_found: bool = False) -> str | None:
     
     """ Returns reference to DAG-specific template file, if one exists.
     
@@ -29,7 +29,7 @@ def get_template_file(
     Args:
         template:   Template name (e.g. table name or reporting object) without any extension
         ext:        Template file extension, `.sql` by default
-        dag:        Optional DAG context
+        dag:        Optional DAG context. If not provided, current DAG context will be used
         fail_if_not_found: If `True`, `AirflowFailException` will be raised if template does not exist
             (default is `False`)
 
@@ -68,19 +68,19 @@ def get_template_file(
 
 def get_template(
         template: str, 
-        ext: Optional[str] = '.sql', 
-        dag: Optional[DAG] = None,
-        fail_if_not_found: Optional[bool] = False,
-        read_mode: Optional[str] = 'rt') -> Optional[Union[str, bytes]]:
+        ext: str = '.sql', 
+        dag: DAG | None = None,
+        fail_if_not_found: bool = False,
+        read_mode: str = 'rt') -> str | bytes | None:
     
     """ Returns template content. See `get_template_file` for details on templates.
 
     Args:
-        template:  Template name (e.g. table name or reporting object) without any extension
-        ext:    Template file extension, `.sql` by default
-        dag:    Optional DAG context
+        template:   Template name (e.g. table name or reporting object) without any extension
+        ext:        Template file extension, `.sql` by default
+        dag:        Optional DAG context. If not provided, current DAG context will be used
         fail_if_not_found: If `True`, `AirflowFailException` will be raised if template does not exist
-        read_mode:   Read mode (`rt` for text, `rb` for binary, other will fail)
+        read_mode:  Read mode (either `rt` for text or `rb` for binary)
 
     Returns:
         Template file content or `None` if no file was found and `fail_if_not_found = False`.
@@ -121,3 +121,10 @@ def get_template(
     full_file_name = os.path.join(conf.get('core','dags_folder'), template_file)
     with open(full_file_name, read_mode) as fp:
         return fp.read()
+
+def get_predefined_template(name: str) -> jinja2.Template:
+    """ Retrieves a template from package resources. Mostly for internal use. """
+    template_file = f'templates/{name}'
+    template_res = importlib.resources.files('astro_extras').joinpath(template_file)
+    with importlib.resources.as_file(template_res) as template_file:
+        return jinja2.Template(template_file.read_text())

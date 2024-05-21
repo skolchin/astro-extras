@@ -6,7 +6,7 @@
 import re
 from datetime import datetime, timedelta
 from dateutil.parser import isoparse
-
+from sqlalchemy import text
 from airflow.models import DAG, BaseOperator
 from airflow.models.xcom_arg import XComArg
 from airflow.models.dag import DagContext
@@ -14,15 +14,15 @@ from airflow.operators.python import get_current_context
 from airflow.utils.context import Context
 from airflow.utils.state import TaskInstanceState
 from airflow.utils.trigger_rule import TriggerRule
+from airflow.providers.common.sql.hooks.sql import DbApiHook
 from airflow.exceptions import AirflowException, AirflowFailException
 from airflow.settings import TIMEZONE
-
 from attr import define, field
 from astro import sql as aql
-from astro.sql.operators.raw_sql import RawSQLOperator
-from typing import Optional, Union, Any, Tuple, cast
+from typing import Any, Tuple, cast
 
 from ..utils.datetime_local import datetime_to_tz
+from ..utils.template import get_predefined_template
 
 @define(slots=False)
 class ETLSession:
@@ -112,12 +112,13 @@ class ETLSession:
 
 class OpenSessionOperator(BaseOperator):
     """ Session opening operator. Normally is used within `open_session` function """
+    ui_color = "#82eef0"
 
     def __init__(self,
                  *,
-                 source_conn_id: Optional[str] = 'default',
-                 destination_conn_id: Optional[str] = 'default',
-                 session_conn_id: Optional[str] = None,
+                 source_conn_id: str = 'default',
+                 destination_conn_id: str = 'default',
+                 session_conn_id: str = None,
                  **kwargs):
 
         task_id = kwargs.pop('task_id', 'open-session')
@@ -129,22 +130,19 @@ class OpenSessionOperator(BaseOperator):
         self.session: ETLSession = None
 
     def _new_session(self, period_start: str, period_end: str, context: Context) -> int:
-        # TODO: use database-neutral statement with SQLA
-        sql = f"""insert into public.sessions(source, target, period, started, status, run_id) 
-            values('{self.source_conn_id}','{self.destination_conn_id}','{{ {period_start}, {period_end} }}', 
-            '{datetime.now()}','running','{context['run_id']}') returning session_id"""
-
-        op = RawSQLOperator(
-            task_id=self.task_id,
-            python_callable=lambda : sql,
-            conn_id=self.session_conn_id,
-            handler=lambda result: result.fetchone(),
-            response_size=1)
-        
-        return op.execute(context)[0]
+        template = get_predefined_template('session_open.sql')
+        sql = template.render(
+            source_conn_id=self.source_conn_id,
+            destination_conn_id=self.destination_conn_id,
+            period_str=f'{{ "{period_start}", "{period_end}" }}',
+            started=datetime.now().isoformat(),
+            run_id=context['run_id'],
+        )
+        hook: DbApiHook = DbApiHook.get_hook(self.session_conn_id)
+        result = hook.get_first(sql)
+        return result[0]
 
     def execute(self, context: Context):
-
         period_start, period_end = get_session_period(context)
         session_id = self._new_session(period_start, period_end, context)
         self.log.info(f'New session {session_id} for period [{period_start},{period_end}] started')
@@ -162,10 +160,11 @@ class OpenSessionOperator(BaseOperator):
 
 class CloseSessionOperator(BaseOperator):
     """ Session closing operator. Normally is used within `close_session` function """
+    ui_color = "#78f0f0"
 
     def __init__(self,
                  *,
-                 session: Union[ETLSession, XComArg, None] = None,
+                 session: ETLSession | XComArg | None = None,
                  **kwargs):
 
         task_id = kwargs.pop('task_id', 'close-session')
@@ -181,14 +180,14 @@ class CloseSessionOperator(BaseOperator):
         status = 'error' if failed_tasks else 'success'
 
         # TBD: use of database-neutral statement
-        sql = f"update public.sessions set finished=current_timestamp, status='{status}' " \
-                   f"where session_id={self.session.session_id}"
-        op = RawSQLOperator(
-            task_id=self.task_id,
-            python_callable=lambda : sql,
-            conn_id=self.session.session_conn_id,
-            response_size=1)
-        op.execute(context)
+        template = get_predefined_template('session_close.sql')
+        sql = template.render(
+            session_id=self.session.session_id,
+            status=status,
+            finished=datetime.now().isoformat()
+        )
+        hook: DbApiHook = DbApiHook.get_hook(self.session.session_conn_id)
+        hook.run(sql)
         self.log.info(f'Session {self.session.session_id} closed with status {status}')
 
         if status == 'error':
@@ -197,8 +196,8 @@ class CloseSessionOperator(BaseOperator):
 def open_session(
         source_conn_id: str, 
         destination_conn_id: str, 
-        session_conn_id: Optional[str] = None, 
-        dag: Optional[DAG] = None,
+        session_conn_id: str | None = None, 
+        dag: DAG | None = None,
         **kwargs) -> XComArg:
     """ Opens a new ETL session.
 
@@ -300,9 +299,9 @@ def open_session(
         **kwargs))
 
 def close_session(
-        session: Union[ETLSession, XComArg], 
-        upstream: Optional[Any] = None,
-        dag: Optional[DAG] = None,
+        session: ETLSession | XComArg, 
+        upstream: Any | None = None,
+        dag: DAG | None = None,
         **kwargs) -> XComArg:
     """ Closes the ETL session.
 
@@ -342,7 +341,7 @@ def close_session(
     op.set_upstream(upstream)
     return XComArg(op)
 
-def get_current_session(context: Optional[Context] = None) -> ETLSession:
+def get_current_session(context: Context | None = None) -> ETLSession:
     """ Retrieves current session from XCom.
     
     Args:
@@ -354,8 +353,8 @@ def get_current_session(context: Optional[Context] = None) -> ETLSession:
     context = context or get_current_context()
     return context['ti'].xcom_pull(key='session')
 
-def ensure_session(session: Optional[Union[ETLSession, XComArg]], 
-                   context: Optional[Context] = None) -> ETLSession:
+def ensure_session(session: ETLSession | XComArg | None, 
+                   context: Context | None = None) -> ETLSession:
     """ Returns current session. If a placeholder object returned by `open_session` is passed in,
     retrieves actual session from XCom. 
     
@@ -366,18 +365,20 @@ def ensure_session(session: Optional[Union[ETLSession, XComArg]],
     Returns:
         Current ETL session as `ETLSession` class instance
     """
-    if session is None:
-        return None
-    if isinstance(session, ETLSession):
-        return session
-    if isinstance(session, XComArg):
-        return get_current_session(context)
-    raise TypeError(f'Either ETLSession or XComArg expected, {session.__class__.__name__} found')
+    match session:
+        case None:
+            return None
+        case ETLSession():
+            return session
+        case XComArg():
+            return get_current_session(context)
+        case _:
+            raise TypeError(f'Either ETLSession or XComArg expected, {session.__class__.__name__} found')
 
 _TS_REGX = r'\d{4}-([0]\d|1[0-2])-([0-2]\d|3[01])(T\d{2}:\d{2}:\d{2})?'
 _FULL_REGX = r'\[\d{4}-([0]\d|1[0-2])-([0-2]\d|3[01])(T\d{2}:\d{2}:\d{2})?,\s*\d{4}-([0]\d|1[0-2])-([0-2]\d|3[01])(T\d{2}:\d{2}:\d{2})?]'
 
-def get_session_period(context: Optional[Context] = None) -> Tuple[str, str]:
+def get_session_period(context: Context | None = None) -> Tuple[str, str]:
     """ Calculates ETL session loading period.
     
     This function is used when a new session is created. It recognizes a "period"
@@ -415,11 +416,11 @@ def get_session_period(context: Optional[Context] = None) -> Tuple[str, str]:
 
     if (period_str := context['dag_run'].conf.get('period')):
         if not re.match(_FULL_REGX, period_str):
-            raise AirflowFailException('Period must be specified as "period": "[<date_from>,<date_to>]"')
+            raise AirflowFailException('Period must be specified as {"period": "[<from>,<to>]"}, got %s instead', period_str)
         
         period = [isoparse(x.group(0)) for x in re.finditer(_TS_REGX, period_str)]
         if len(period) < 2:
-            raise AirflowFailException('Invalid period: two valid dates in YYYY-MM-DD format must be specified')
+            raise AirflowFailException('Invalid period: two valid dates in ISO format must be specified, got %s instead', period_str)
 
         # If no time part is provided in the upper period bound,
         # consider this to be date-only and add 1 day to align to days'end

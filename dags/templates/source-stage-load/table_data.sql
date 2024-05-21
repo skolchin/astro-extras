@@ -1,3 +1,4 @@
+-- template for source_db.table_data.sql
 select 
     {{ti.xcom_pull(key="session").session_id}} as session_id,
     id,

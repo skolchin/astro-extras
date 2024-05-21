@@ -3,9 +3,11 @@
 
 """ Misc utility functions """
 
-from itertools import pairwise, groupby
+from urllib.parse import urlparse
+from itertools import pairwise
 from airflow.models import BaseOperator
 from astro.sql.table import BaseTable, Table, Metadata
+from astro.databases.base import BaseDatabase
 from typing import Union, Tuple, Optional, List, Iterable
 
 def split_table_name(table: str) -> Tuple[Optional[str], str]:
@@ -62,3 +64,39 @@ def schedule_ops(ops_list: List[BaseOperator], num_parallel: int = 1) -> List[Ba
             a.set_downstream(b)
 
     return [x[-1] for x in splits]
+
+def is_same_database_uri(uri_1: str, uri_2: str) -> bool:
+    """ Compares two database URIs abd returns `True` if they point to the same database.
+    `Schema` part of URI (usually encoded as `schema=xxx` query string) is ignored. 
+    Note that all URI parts are compared only lexigraphically.
+    """
+    p1 = urlparse(uri_1)
+    p2 = urlparse(uri_2)
+    return p1.scheme == p2.scheme and p1.netloc == p2.netloc and p1.username == p2.username and p1.path == p2.path
+
+def adjust_table_name_case(table: BaseTable, db: BaseDatabase) -> BaseTable:
+
+    match db.sql_type:
+        case 'postgresql':
+            # names must be lower case
+            new_name = table.name.lower()
+            new_schema = table.metadata.schema.lower() if table.metadata and table.metadata.schema else None
+            return Table(
+                new_name,
+                conn_id=table.conn_id, 
+                metadata=Metadata(new_schema, table.metadata.database if table.metadata else None), 
+                columns=table.columns,
+                temp=table.temp)
+
+        case 'oracle':
+            # names must be upper case
+            new_name = table.name.upper()
+            new_schema = table.metadata.schema.upper() if table.metadata and table.metadata.schema else None
+            return Table(
+                new_name,
+                conn_id=table.conn_id, 
+                metadata=Metadata(new_schema, table.metadata.database if table.metadata else None), 
+                columns=table.columns,
+                temp=table.temp)
+
+    return table
