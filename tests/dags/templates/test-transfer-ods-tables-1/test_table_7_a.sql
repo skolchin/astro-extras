@@ -1,0 +1,1 @@
+select * from public.test_table_7_a;

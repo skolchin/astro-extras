@@ -3,11 +3,14 @@
 
 """ PyTest fixtures """
 
+
 import os
 import pytest
-from pathlib import Path
+
 from pytest_docker.plugin import get_cleanup_command
 from confsupport import *
+
+from sqlalchemy import MetaData
 
 def pytest_addoption(parser):
     parser.addoption('--keep', action='store_true', default=False, 
@@ -89,3 +92,17 @@ def target_db(db_credentials, docker_ip, docker_services, pytestconfig):
     engine = get_db_engine('target_db', db_credentials, docker_ip, docker_services)
     init_database(engine, dir)
     return engine
+
+@pytest.fixture(scope='function')
+def src_metadata(source_db, schema='public'):
+    """ Creates a SQLAlchemy MetaData object for the source database with a specified schema """
+    metadata = MetaData()
+    metadata.reflect(bind=source_db, schema=schema)
+    return metadata
+
+@pytest.fixture(scope='function')
+def tgt_metadata(target_db, schema='public'):
+    """ Creates a SQLAlchemy MetaData object for the target database with a specified schema """
+    metadata = MetaData()
+    metadata.reflect(bind=target_db, schema=schema)
+    return metadata

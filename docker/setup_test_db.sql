@@ -34,7 +34,8 @@ create table public.test_table_1(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp default current_timestamp
 );
 
 create table public.test_table_2(
@@ -42,7 +43,8 @@ create table public.test_table_2(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp default current_timestamp
 );
 
 create table public.test_table_3(
@@ -50,7 +52,8 @@ create table public.test_table_3(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp default current_timestamp
 );
 
 create table public.test_table_4(
@@ -58,7 +61,8 @@ create table public.test_table_4(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp default current_timestamp
 );
 
 create table public.test_table_5(
@@ -66,7 +70,8 @@ create table public.test_table_5(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp default current_timestamp
 );
 
 create table public.test_table_6(
@@ -74,7 +79,8 @@ create table public.test_table_6(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp default current_timestamp
 );
 
 create table public.test_table_7(
@@ -82,7 +88,26 @@ create table public.test_table_7(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp default current_timestamp
+);
+
+create table public.test_table_8(
+    id serial not null primary key,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    mod_ts timestamp default current_timestamp
+);
+
+create table public.test_table_9(
+    id serial not null primary key,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    mod_ts timestamp default current_timestamp
 );
 
 insert into public.test_table_1(test1, test2, test3, test4)
@@ -113,7 +138,17 @@ insert into public.test_table_7(test1, test2, test3, test4)
 select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
 from generate_series(1, 100) i;
 
+insert into public.test_table_8(test1, test2, test3, test4)
+select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
+from generate_series(1, 100) i;
+
+insert into public.test_table_9(test1, test2, test3, test4)
+select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
+from generate_series(1, 100) i;
+
 \c target_db
+
+CREATE SCHEMA IF NOT EXISTS actuals;
 
 create table public.sessions(
     session_id serial not null primary key,
@@ -127,27 +162,30 @@ create table public.sessions(
 );
 
 create table public.test_table_1(
-    id serial not null primary key,
+    id serial not null,
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp
 );
 
 create table public.test_table_2(
-    id serial not null primary key,
+    id serial not null,
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp
 );
 
 create table public.test_table_3(
-    id serial not null primary key,
+    id serial not null,
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp
 );
 
 create table public.test_table_4(
@@ -156,7 +194,8 @@ create table public.test_table_4(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp
 );
 
 create table public.test_table_5(
@@ -165,7 +204,8 @@ create table public.test_table_5(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp
 );
 
 create table public.test_table_6(
@@ -174,7 +214,8 @@ create table public.test_table_6(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp
 );
 
 create table public.test_table_7(
@@ -185,12 +226,63 @@ create table public.test_table_7(
     test1 text not null,
     test2 int not null,
     test3 float not null,
-    test4 bool not null
+    test4 bool not null,
+    mod_ts timestamp
 );
 
-create view public.test_table_4_a as
-select * from public.test_table_4
-where session_id = (select max(session_id) from public.sessions where status = 'success');
+create table public.test_table_8(
+    session_id int not null references public.sessions(session_id),
+    id int not null primary key,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    mod_ts timestamp
+);
+
+create table public.test_table_9(
+    session_id int not null references public.sessions(session_id),
+    _modified timestamptz,
+    _deleted timestamptz,
+    id int not null,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    mod_ts timestamp not null
+);
+
+create table actuals.test_table_8(
+    session_id int not null references public.sessions(session_id),
+    id int not null primary key,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    mod_ts timestamp
+);
+
+create table actuals.test_table_9(
+    session_id int not null references public.sessions(session_id),
+    _modified timestamptz,
+    _deleted timestamptz,
+    id int not null,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    mod_ts timestamp not null
+);
+
+CREATE OR REPLACE VIEW public.test_table_4_a
+AS SELECT 
+    *
+   FROM public.test_table_4 d
+  WHERE ((id, session_id) IN (SELECT t.id,
+            max(t.session_id) AS session_id
+           FROM public.test_table_4 t
+             JOIN sessions s ON s.session_id = t.session_id AND s.status::text = 'success'::text
+          GROUP BY t.id));
 
 create or replace view public.test_table_7_a as
 with d as (

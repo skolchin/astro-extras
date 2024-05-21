@@ -8,4 +8,4 @@ SELECT
     mod_ts AS mod_ts
 FROM public.test_table_4
 WHERE mod_ts BETWEEN CAST('{{ ti.xcom_pull(key="session").period_start }}' AS timestamp) 
-                AND CAST('{{ ti.xcom_pull(key="session").period_end }}' AS timestamp) and id between 10 and 20;
+                AND CAST('{{ ti.xcom_pull(key="session").period_end }}' AS timestamp);

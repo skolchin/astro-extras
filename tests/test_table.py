@@ -3,206 +3,756 @@
 
 """ Table unit tests """
 
-import pytest
-import sqlalchemy
-import pandas as pd
-from itertools import zip_longest
-from confsupport import run_dag, logger
-from astro.sql.table import Table
-from sqlalchemy import MetaData, Table as sqlaTable, select, func, inspect
 
-try:
-    from astro_extras import declare_tables
-except ModuleNotFoundError:
-    declare_tables = None
+from datetime import datetime, timedelta
 
+from sqlalchemy import Table
+from confsupport import logger
+
+from utils import update_mod_ts_tables, get_table_row_count, create_tables_tuple
+
+from asserts import (
+    assert_dag_run,
+    assert_table_columns_existence,
+    assert_tables_existence,
+    assert_views_existence,
+    assert_tables_equality,
+    assert_compare_table_schemas,
+    assert_compare_tables_contents,
+    assert_table_row_count,
+    assert_tables_data_in_target
+)
+
+
+# Table attributes that will be ignored during tests
 IGNORE_ATTR = set(['session_id', '_deleted', '_modified'])
+# IDs of records that will be modified for testing
+MOD_IDS = [1, 2, 3]
+# Get the current date and time
+DT_NOW = datetime.now()
+# Calculate the date 10 days before today
+DATE_10_DAYS_BEFORE = (DT_NOW.date() - timedelta(days=10))
+# Dictionary containing modification dates for testing purposes
+MOD_DATES = {
+    # Target date and time 11 days from now
+    'target': (DT_NOW + timedelta(days=11)),
+    # Start date 5 days from today, formatted as "YYYY-MM-DD"
+    'p_start': (DT_NOW.date() + timedelta(days=5)).strftime("%Y-%m-%d"),
+    # End date 15 days from today, formatted as "YYYY-MM-DD"
+    'p_end': (DT_NOW.date() + timedelta(days=15)).strftime("%Y-%m-%d")
+}
 
-def compare_table_contents(source_table: sqlalchemy.Table, destination_table: sqlalchemy.Table) -> bool:
-    """
-    Compare contents of two tables using SQLAlchemy.
 
-    Args:
-        source_table (sqlalchemy.Table): Source table object in SQLAlchemy.
-        destination_table (sqlalchemy.Table): Destination table object in SQLAlchemy.
+def test_table_load_save(
+        target_db,
+        docker_ip,
+        docker_services,
+        airflow_credentials,
+        tgt_metadata
+    ):
+    """ 
+    Test for `load_table` and `save_table` functions.
 
-    Returns:
-        bool: A boolean value indicating whether contents match or not.
-    """
-
-    # Get data from source and destination tables.
-    with source_table.bind.connect() as src_conn, destination_table.bind.connect() as dest_conn:
-        source_data = src_conn.execute(source_table.select())
-        dest_data = dest_conn.execute(destination_table.select())
-
-    # Check if data is identical ignoring technical fields
-    for (source_row, dest_row) in zip_longest(source_data, dest_data):
-        if source_row is None or dest_row is None:
-            return False
-        
-        source_attr = source_row._asdict()
-        dest_attr = dest_row._asdict()
-        for key in source_attr:
-            if key not in IGNORE_ATTR:
-                src_val = source_attr[key]
-                dst_val = dest_attr[key]
-                if src_val != dst_val:
-                    return False
-
-    return True
-
-def get_table_row_count(table: sqlalchemy.Table) -> int:
-    """
-    Returns the number of rows in the given SQLalchemy Table object.
+    This test verifies the correct functionality of the `load_table` and `save_table` functions.
 
     Args:
-        table (sqlalchemy.Table): SQLalchemy Table object to count rows for
+    -----
+        target_db: SQLAlchemy engine for the target database.
+        docker_ip: IP address of the Docker host.
+        docker_services: Docker services for managing containers.
+        airflow_credentials: Credentials for Airflow in the form (username, password).
+        tgt_metadata: SQLAlchemy MetaData object for the target database.
 
-    Returns:
-        int: The number of rows in the table
+    Raises:
+    -------
+        AssertionError: If any of the assertions fail.
     """
-
-    # Connect to the database engine using the table's bind
-    with table.bind.connect() as conn:
-        # Construct a SQLalchemy select statement that counts the number of rows in the table
-        count_query = select([func.count()]).select_from(table)
-
-        # Execute the query and retrieve the count from the result
-        row_count = conn.scalar(count_query)
-
-    return row_count
-
-def compare_table_schemas(source_table: sqlalchemy.Table, destination_table: sqlalchemy.Table) -> bool:
-    """
-    Compare schema of two tables using SQLAlchemy.
-
-    Args:
-        source_table (sqlalchemy.Table): Source table object in SQLAlchemy.
-        destination_table (sqlalchemy.Table): Destination table object in SQLAlchemy.
-
-    Returns:
-        bool: A boolean value indicating whether schemas match or not.
-    """
-
-    # Get column names for source and destination tables.
-    # Destination might contain some technical fields ('session_id') which are ignored
-    source_columns = set([column.name for column in source_table.columns]) - IGNORE_ATTR
-    dest_columns = set([column.name for column in destination_table.columns]) - IGNORE_ATTR
-
-    # Check if columns match
-    if source_columns != dest_columns:
-        return False
-
-    # Get index names for source and destination tables.
-    source_indexes = [index.name for index in inspect(source_table).indexes]
-    dest_indexes = [index.name for index in inspect(destination_table).indexes]
-
-    # Check if indexes match.
-    if sorted(source_indexes) != sorted(dest_indexes):
-        return False
-
-    return True
-
-def assert_tables_equal(source_db, target_db, lst_tables, use_actuals_view: bool = False):
-    # Create connections to the source and target databases.
-    with source_db.connect() as src_conn,\
-         target_db.connect() as tgt_conn:
-
-        # Get metadata of tables in source and target databases.
-        # Reflect on the metadata of source and target databases to get their table schema.
-        meta_src = MetaData(src_conn)
-        meta_src.reflect()
-        meta_tgt = MetaData(tgt_conn)
-        meta_tgt.reflect()
-
-        # Check if required tables exist in source and target databases.
-        for table in lst_tables:
-            assert table in meta_src.tables
-            assert table in meta_tgt.tables
-
-        # Get the tables to be compared in source and target databases.
-        src_tables = [sqlaTable(table_name, meta_src) for table_name in lst_tables]
-        tgt_tables = [sqlaTable(table_name, meta_tgt) for table_name in lst_tables]
-
-        # Compare schemas
-        for src_table, tgt_table in zip(src_tables, tgt_tables):
-            assert compare_table_schemas(src_table, tgt_table)
-
-        # Now compare the content using actuals view if requested
-        src_tables = [sqlaTable(table_name, meta_src) for table_name in lst_tables]
-        tgt_tables = [sqlaTable(f'{table_name}{"_a" if use_actuals_view else ""}', meta_tgt) for table_name in lst_tables]
-
-        # Compare the tables row count and schemas
-        for src_table, tgt_table in zip(src_tables, tgt_tables):
-            assert compare_table_contents(src_table, tgt_table)
-
-def test_table_load_save(source_db, target_db, docker_ip, docker_services, airflow_credentials):
-    """ Test for `load_table` and `save_table` functions """
     logger.info(f'Testing table load and save')
-    result = run_dag('test-table-load_save', docker_ip, docker_services, airflow_credentials)
-    assert result == 'success'
+    table_name = 'tmp_test_table_1'
+    # Ensure the DAG run named 'test-table-load_save' completes successfully
+    assert_dag_run('test-table-load_save', docker_ip, docker_services, airflow_credentials)
+    # Check if the temporary test table 'tmp_test_table_1' exists in the target database
+    assert_tables_existence(target_db, [table_name])
+    # Verify that 'tmp_test_table_1' has exactly 100 rows
+    assert_table_row_count(target_db, Table(table_name, tgt_metadata, autoload_with=target_db), 100)
+    # Check if the column 'some_column' exists in 'tmp_test_table_1'
+    assert_table_columns_existence(target_db, table_name, ['some_column'])
 
-    with target_db.begin() as conn:
-        data = pd.read_sql_table('tmp_test_table_1', conn)
-        assert data.shape[0] == 3
-        assert 'some_column' in data.columns
 
-def test_table_save_fail(docker_ip, docker_services, airflow_credentials):
-    """ Test that `save_table()` function fails if no target table exists. """
+def test_table_save_fail(
+        docker_ip,
+        docker_services,
+        airflow_credentials,
+        target_db
+    ):
+    """ 
+    Test that `save_table()` function fails if no target table exists.
+
+    This test verifies that the `save_table()` function correctly fails when attempting to save to a non-existing table.
+
+    Args:
+    -----
+        docker_ip: IP address of the Docker host.
+        docker_services: Docker services for managing containers.
+        airflow_credentials: Credentials for Airflow in the form (username, password).
+        target_db: SQLAlchemy engine for the target database.
+
+    Raises:
+    -------
+        AssertionError: If any of the assertions fail.
+    """
     logger.info(f'Testing table save to non-existing table')
-    result = run_dag('test-table-save_fail', docker_ip, docker_services, airflow_credentials)
-    assert result == 'failed'
+    # Verify that the DAG run failed
+    assert_dag_run('test-table-save_fail', docker_ip, docker_services, airflow_credentials, success=False)
+    # Check that the non-existing table does not exist in the target database
+    assert_tables_existence(target_db, ['tmp_test_table_11'], success=False)
 
-def test_table_declare_tables():
-    if declare_tables is None:
-        pytest.skip('Astro-extras not installed')
 
-    # Test function to declare tables using the given table names and source database name.
-    logger.info(f'Testing declare_tables function')
+def test_transfer_tables(
+        docker_ip,
+        docker_services,
+        airflow_credentials,
+        source_db,
+        target_db,
+        src_metadata,
+        tgt_metadata
+    ):
+    """
+    Test function for transfer_table() / transfer_tables() functions.
 
-    # Declare tables.
-    res = declare_tables(['table_name_1', 'table_name_2'], 'source_db')
+    This test verifies the correct functioning of the `transfer_table()` and `transfer_tables()` functions.
+    For `test_table_2`, a template is used to select 11 rows, while for other tables, 
+    records are completely reloaded. The session is not in use.
 
-    # Check if the return type is a list.
-    assert isinstance(res, list)
+    Args:
+    -----
+        docker_ip (str): IP address of the Docker host.
+        docker_services (pytest_docker.plugin.Services): Docker services for managing containers.
+        airflow_credentials (tuple): Credentials for Airflow in the form (username, password).
+        source_db (Engine): SQLAlchemy engine for the source database.
+        target_db (Engine): SQLAlchemy engine for the target database.
+        src_metadata (MetaData): SQLAlchemy MetaData object for the source database.
+        tgt_metadata (MetaData): SQLAlchemy MetaData object for the target database.
 
-    # Check if each item in the list is an instance of the sqlalchemy.Table class.
-    for i in res:
-        assert isinstance(i, Table)
+    Returns:
+    --------
+        None
 
-def test_transfer_tables(docker_ip, docker_services, airflow_credentials, source_db, target_db):
-    """ Test for transfer_table() / transfer_tables() functions. """
-
+    Raises:
+    -------
+        AssertionError: If any of the assertions fail.
+    """
     logger.info(f'Testing transfer_tables function')
-    result = run_dag('test-transfer-tables', docker_ip, docker_services, airflow_credentials)
-    assert result == 'success'
+    
+    tables_name = ['test_table_1', 'test_table_2', 'test_table_3']
+    
+    # Check the existence of the table in the target database
+    assert_tables_existence(target_db, tables_name)
+    
+    # Create SQLAlchemy Table objects (source)
+    test_table_1_source, test_table_2_source, test_table_3_source = create_tables_tuple(
+        source_db,
+        tables_name,
+        src_metadata
+    )
+    
+    # Create SQLAlchemy Table objects (target)
+    test_table_1_target, test_table_2_target, test_table_3_target = create_tables_tuple(
+        target_db,
+        tables_name,
+        tgt_metadata
+    )
+    
+    # Verify the successful execution of the DAG
+    assert_dag_run('test-transfer-tables', docker_ip, docker_services, airflow_credentials)
+
+    # Compare table schemas between the source and target databases
+    assert_compare_table_schemas(test_table_2_source, test_table_2_target)
+    
+    # Verify the row count in the target table
+    assert_table_row_count(target_db, test_table_2_target, 11)
+    
+    # Compare data in tables between the source and target databases, ignoring certain columns
+    assert_tables_equality(
+        source_db,
+        target_db,
+        [(test_table_1_source, test_table_1_target),
+         (test_table_3_source, test_table_3_target)],
+        ignore_cols=IGNORE_ATTR)
 
 
-def test_transfer_tables_session(docker_ip, docker_services, airflow_credentials, source_db, target_db):
-    """ Test of transfer_tables() operator under ETL session """
+def test_transfer_tables_session(
+        docker_ip,
+        docker_services,
+        airflow_credentials,
+        source_db,
+        target_db,
+        src_metadata,
+        tgt_metadata
+    ):
+    """
+    Test function for the transfer_tables() operator within an ETL session.
 
-    logger.info(f'Testing transfer_tables() function with ETL session provided')
-    result = run_dag('test-transfer-tables-session', docker_ip, docker_services, airflow_credentials)
-    assert result == 'success'
+    This test validates the transfer of data between tables in the source and target databases 
+    and checks for data integrity, schema consistency, and row count accuracy. The test runs 
+    the DAG twice: first to perform an initial load for a given period, and second to load 
+    the updated delta for a new period. For `test_table_5`, a template is used to select a 
+    specific number of records by identifiers within the period, while for other tables, 
+    data selection is done for the entire period.
 
-def test_transfer_changed_tables(docker_ip, docker_services, airflow_credentials, source_db, target_db):
-    """ Test of transfer_changed_tables() operator """
+    Args:
+    -----
+        docker_ip (str): IP address of the Docker host.
+        docker_services (pytest_docker.plugin.Services): Docker services for managing containers.
+        airflow_credentials (tuple): Credentials for Airflow in the form (username, password).
+        source_db (Engine): SQLAlchemy engine for the source database.
+        target_db (Engine): SQLAlchemy engine for the target database.
+        src_metadata (MetaData): SQLAlchemy MetaData object for the source database.
+        tgt_metadata (MetaData): SQLAlchemy MetaData object for the target database.
 
+    Returns:
+    --------
+        None
+
+    Raises:
+    -------
+        AssertionError: If any of the assertions fail.
+    """
+    logger.info(f'Testing transfer_tables_session function under ETL session')
+    
+    tables_name = ['test_table_4', 'test_table_5', 'test_table_6']
+    
+    # Check the existence of the tables in the target database
+    assert_tables_existence(target_db, tables_name)
+    
+    # Create SQLAlchemy Table objects (source and target)
+    source_tables = create_tables_tuple(source_db, tables_name, src_metadata)
+    target_tables = create_tables_tuple(target_db, tables_name, tgt_metadata)
+    
+    test_table_4_source, test_table_5_source, test_table_6_source = source_tables
+    test_table_4_target, test_table_5_target, test_table_6_target = target_tables
+    
+    for table in tables_name:
+        assert_table_columns_existence(target_db, table, ['session_id'])
+    
+    # Initial load: Run the DAG and assert success
+    assert_dag_run(
+        'test-transfer-tables-session',
+        docker_ip,
+        docker_services,
+        airflow_credentials,
+        params = f'{{"period": "[{DATE_10_DAYS_BEFORE}, {DT_NOW.date()}]"}}'
+    )
+
+    # Assert that the data in 'test_table_4' and 'test_table_6' in the source and target databases are equal
+    assert_tables_equality(
+        source_db,
+        target_db,
+        [(test_table_4_source, test_table_4_target),
+         (test_table_6_source, test_table_6_target)],
+        ignore_cols=IGNORE_ATTR
+    )
+    
+    # Check the existence of the views in the target database
+    assert_views_existence(target_db, [f"{test_table_4_target.name}_a"])
+    
+    # Create actuals view table object for 'test_table_4'
+    test_table_4_actuals = Table(f"{test_table_4_target.name}_a", tgt_metadata, autoload_with=target_db)
+
+    # Assert that the data in 'test_table_4' using the actuals view is equal
+    assert_tables_equality(
+        source_db,
+        target_db,
+        [(test_table_4_source, test_table_4_actuals)],
+        ignore_cols=IGNORE_ATTR
+    )
+    
+    # Assert that the schemas of 'test_table_5' in the source and target databases are equal
+    assert_compare_table_schemas(test_table_5_source, test_table_5_target, ignore_cols=IGNORE_ATTR)
+    
+    # Assert the row count of 'test_table_5' in the target database
+    assert_table_row_count(target_db, test_table_5_target, 11)
+
+    # Update the 'mod_ts' field for specific tables and rows in the source database
+    update_mod_ts_tables(
+        source_db,
+        {test_table_4_source: MOD_IDS, test_table_6_source: MOD_IDS},
+        MOD_DATES['target']
+    )
+
+    # Delta load: Re-run the DAG and assert success
+    assert_dag_run(
+        'test-transfer-tables-session',
+        docker_ip,
+        docker_services,
+        airflow_credentials,
+        params = f'{{"period": "[{MOD_DATES["p_start"]}, {MOD_DATES["p_end"]}]"}}'
+    )
+    
+    # Assert that the data in 'test_table_4' using the actuals view is equal after updates
+    assert_compare_tables_contents(
+        source_db,
+        target_db,
+        [(test_table_4_source, test_table_4_actuals)],
+        ignore_cols=IGNORE_ATTR
+    )
+    
+    # Assert that the data in 'test_table_4', 'test_table_5', 'test_table_6' in the source and target databases are equal
+    assert_compare_tables_contents(
+        source_db,
+        target_db,
+        [
+            (test_table_4_source, test_table_4_target),
+            (test_table_5_source, test_table_5_target),
+            (test_table_6_source, test_table_6_target)
+        ],
+        ignore_cols=IGNORE_ATTR,
+        success=False
+    )
+    
+    # Assert the row count of 'test_table_5' in the target database after updates
+    assert_table_row_count(target_db, test_table_5_target, 11)
+    
+    # Assert that the data in specific tables in the source database are present in the target database
+    assert_tables_data_in_target(
+        source_db,
+        target_db,
+        [
+            (test_table_4_source, test_table_4_target),
+            (test_table_6_source, test_table_6_target)
+        ],
+        ignore_cols=IGNORE_ATTR
+    )
+
+
+def test_transfer_changed_tables(
+        docker_ip,
+        docker_services,
+        airflow_credentials,
+        source_db,
+        target_db,
+        src_metadata,
+        tgt_metadata
+    ):
+    """
+    Test function for the transfer_changed_tables() operator.
+
+    This test verifies the correct functioning of the `transfer_changed_tables()` function, 
+    ensuring that only changed records are transferred. The test involves running the DAG 
+    to perform an initial load, updating specific records, and running the DAG again to 
+    transfer only the changed records.
+
+    Args:
+    -----
+        docker_ip (str): IP address of the Docker host.
+        docker_services (pytest_docker.plugin.Services): Docker services for managing containers.
+        airflow_credentials (tuple): Credentials for Airflow in the form (username, password).
+        source_db (Engine): SQLAlchemy engine for the source database.
+        target_db (Engine): SQLAlchemy engine for the target database.
+        src_metadata (MetaData): SQLAlchemy MetaData object for the source database.
+        tgt_metadata (MetaData): SQLAlchemy MetaData object for the target database.
+
+    Returns:
+    --------
+        None
+
+    Raises:
+    -------
+        AssertionError: If any of the assertions fail.
+    """
     logger.info(f'Testing transfer_changed_tables() function')
-    result = run_dag('test-transfer-tables-session', docker_ip, docker_services, airflow_credentials)
-    assert result == 'success'
 
-    result = run_dag('test-transfer-changed-tables', docker_ip, docker_services, airflow_credentials)
-    assert result == 'success'
+    table_name = ['test_table_4']
+
+    # Assert the existence of 'test_table_4' in the target database
+    assert_tables_existence(target_db, table_name)
+
+    # Create SQLAlchemy Table objects
+    test_table_4_source, = create_tables_tuple(source_db, table_name, src_metadata)
+    test_table_4_target, = create_tables_tuple(target_db, table_name, tgt_metadata)
+
+    # Check the existence of the views in the target database
+    assert_views_existence(target_db, [f"{test_table_4_target.name}_a"])
+    
+    # Initial load: Run the DAG and assert success
+    assert_dag_run(
+        'test-transfer-tables-session',
+        docker_ip,
+        docker_services,
+        airflow_credentials,
+        params=f'{{"period": "[{DATE_10_DAYS_BEFORE}, {DT_NOW.date()}]"}}'
+    )
+    
+    # Update the 'mod_ts' field for specific rows in 'test_table_4' in the source database
+    update_mod_ts_tables(
+        source_db,
+        {test_table_4_source: MOD_IDS},
+        datetime.now() + timedelta(days=4)
+    )
+
+    # Run the DAG to transfer changed records and assert success
+    assert_dag_run(
+        'test-transfer-changed-tables',
+        docker_ip,
+        docker_services,
+        airflow_credentials
+    )
+    
+    # Create actuals view table object for 'test_table_4'
+    test_table_4_actuals = Table(f"{test_table_4_target.name}_a", tgt_metadata, autoload_with=target_db)
+
+    # Assert that the data in 'test_table_4' in the source and target databases are equal using the actuals view
+    assert_tables_equality(
+        source_db,
+        target_db,
+        [(test_table_4_source, test_table_4_actuals)],
+        ignore_cols=IGNORE_ATTR
+    )
+    
+    # Assert that the data in 'test_table_4' in the source and target databases are equal
+    assert_compare_tables_contents(
+        source_db,
+        target_db,
+        [(test_table_4_source, test_table_4_target)],
+        ignore_cols=IGNORE_ATTR,
+        success=False
+    )
+    
+    # Assert that all data from the source table 'test_table_4' is in the destination table
+    assert_tables_data_in_target(
+        source_db,
+        target_db,
+        [(test_table_4_source, test_table_4_target)],
+        ignore_cols=IGNORE_ATTR
+    )
+
+    # Capture the current row count of 'test_table_4' in the target database
+    row_count = get_table_row_count(target_db, test_table_4_target)
+    
+    # Run the DAG again to ensure no additional records are transferred and assert success
+    assert_dag_run(
+        'test-transfer-changed-tables',
+        docker_ip,
+        docker_services,
+        airflow_credentials
+    )
+    
+    # Assert that the row count of 'test_table_4' in the target database has not changed
+    assert_table_row_count(target_db, test_table_4_target, row_count)
 
 
-def test_transfer_ods_tables(docker_ip, docker_services, airflow_credentials, source_db, target_db):
-    """ Test of transfer_changed_tables() operator """
+def test_transfer_ods_tables(
+        docker_ip,
+        docker_services,
+        airflow_credentials,
+        source_db,
+        target_db,
+        src_metadata,
+        tgt_metadata
+    ):
+    """
+    Test function for the transfer_ods_tables() operator.
 
+    This test verifies the correct functioning of the `transfer_ods_tables()` function, ensuring that
+    records are correctly transferred and updated between source and target tables. The test involves 
+    multiple runs of the DAG to validate initial data transfer, data consistency, and additional 
+    modifications.
+
+    Args:
+    -----
+        docker_ip (str): IP address of the Docker host.
+        docker_services (pytest_docker.plugin.Services): Docker services for managing containers.
+        airflow_credentials (tuple): Credentials for Airflow in the form (username, password).
+        source_db (Engine): SQLAlchemy engine for the source database.
+        target_db (Engine): SQLAlchemy engine for the target database.
+        src_metadata (MetaData): SQLAlchemy MetaData object for the source database.
+        tgt_metadata (MetaData): SQLAlchemy MetaData object for the target database.
+
+    Returns:
+    --------
+        None
+
+    Raises:
+    -------
+        AssertionError: If any of the assertions fail.
+    """
     logger.info(f'Testing transfer_ods_tables() function')
 
-    result = run_dag('test-transfer-ods-tables-1', docker_ip, docker_services, airflow_credentials)
-    assert result == 'success'
+    table_name = ['test_table_7']
+    
+    # Assert the existence of 'test_table_7' in the target database
+    assert_tables_existence(target_db, table_name)
 
-    result = run_dag('test-transfer-ods-tables-2', docker_ip, docker_services, airflow_credentials)
-    assert result == 'success'
+    # Assert that the columns '_modified' and '_deleted' exist in 'test_table_7' in the target database
+    assert_table_columns_existence(target_db, table_name[0], ['_modified', '_deleted'])
+
+    # Create SQLAlchemy Table objects (source and target)
+    test_table_7_source, = create_tables_tuple(source_db, table_name, src_metadata)
+    test_table_7_target, = create_tables_tuple(target_db, table_name, tgt_metadata)
+
+    # Check the existence of the views in the target database
+    assert_views_existence(target_db, [f"{test_table_7_target.name}_a"])
+    
+    # Initial load: Run the DAG and assert success
+    assert_dag_run('test-transfer-ods-tables-1', docker_ip, docker_services, airflow_credentials)
+    
+    # Create actuals view table object for 'test_table_7'
+    test_table_7_a = Table(f"{test_table_7_target.name}_a", tgt_metadata, autoload_with=target_db)
+    
+    # Assert that the data in 'test_table_7' in the source and target databases are equal using the actuals view
+    # Assert that the data in 'test_table_7' in the source and target databases are equal
+    assert_tables_equality(
+        source_db,
+        target_db,
+        [(test_table_7_source, test_table_7_a),
+         (test_table_7_source, test_table_7_target)],
+        ignore_cols=IGNORE_ATTR
+    )
+    
+    # Run the DAG again and assert success
+    assert_dag_run('test-transfer-ods-tables-1', docker_ip, docker_services, airflow_credentials)
+    
+    # Assert that the data in 'test_table_7' in the source and target databases are equal using the actuals view
+    # Assert that the data in 'test_table_7' in the source and target databases are equal
+    assert_compare_tables_contents(
+        source_db,
+        target_db,
+        [(test_table_7_source, test_table_7_a),
+         (test_table_7_source, test_table_7_target)],
+        ignore_cols=IGNORE_ATTR
+    )
+    
+    # Capture the current row count of 'test_table_7' in the target database
+    row_count = get_table_row_count(target_db, test_table_7_target)
+    
+    # Run the DAG to ensure additional modifications are transferred and assert success
+    assert_dag_run('test-transfer-ods-tables-2', docker_ip, docker_services, airflow_credentials)
+    
+    # Assert that the data in 'test_table_7' in the source and target databases are equal using the actuals view
+    assert_compare_tables_contents(
+        source_db,
+        target_db,
+        [(test_table_7_source, test_table_7_a)],
+        ignore_cols=IGNORE_ATTR
+    )
+    
+    # Assert that the row count of 'test_table_7' in the target database has increased by 22
+    assert_table_row_count(target_db, test_table_7_target, row_count + 22)
+    
+    # Assert that all data from the source table 'test_table_7' is in the destination table
+    assert_tables_data_in_target(
+        source_db,
+        target_db,
+        [(test_table_7_source, test_table_7_target)],
+        ignore_cols=IGNORE_ATTR
+    )
+
+
+# ===========================================
+
+# ================ FUTURE ===================
+
+# ===========================================
+
+
+# def test_transfer_tables_actuals(
+#         docker_ip,
+#         docker_services,
+#         airflow_credentials,
+#         source_db,
+#         target_db,
+#         src_metadata,
+#         tgt_metadata
+#     ):
+#     """
+#     Test function for transferring data to actuals table using the ActualsTableTransfer operator.
+
+#     This test verifies the correct functioning of the `ActualsTableTransfer` operator, ensuring
+#     that data is transferred correctly from the source table to the target actuals table. The test
+#     involves running DAGs to perform initial and delta loads, inserting new records into the source
+#     table, and verifying the data transfer.
+
+#     Args:
+#     -----
+#         docker_ip (str): IP address of the Docker host.
+#         docker_services (pytest_docker.plugin.Services): Docker services for managing containers.
+#         airflow_credentials (tuple): Credentials for Airflow in the form (username, password).
+#         source_db (Engine): SQLAlchemy engine for the source database.
+#         target_db (Engine): SQLAlchemy engine for the target database.
+#         tgt_metadata (MetaData): SQLAlchemy MetaData object for the target database.
+
+#     Returns:
+#     --------
+#         None
+
+#     Raises:
+#     -------
+#         AssertionError: If any of the assertions fail.
+#     """
+#     table_name = 'test_table_8'
+    
+#     assert_tables_existence(source_db, [table_name])
+#     assert_tables_existence(target_db, [table_name])
+#     assert_tables_existence(target_db, [table_name], schema='actuals')
+
+#     test_table_8_source_public = Table(table_name, src_metadata, autoload_with=source_db)
+#     test_table_8_target_public = Table(table_name, tgt_metadata, autoload_with=target_db)
+#     test_table_8_target_actuals = Table(table_name, MetaData(schema='actuals'), autoload_with=target_db)
+    
+#     assert_dag_run(
+#         'test-transfer-tables-for-actuals-data',
+#         docker_ip,
+#         docker_services,
+#         airflow_credentials,
+#         params = f'{{"period": "[{DATE_10_DAYS_BEFORE}, {DT_NOW.date()}]"}}'
+#     )
+    
+#     assert_dag_run(
+#         'test-transfer-tables-actuals',
+#         docker_ip,
+#         docker_services,
+#         airflow_credentials,
+#         params = f'{{"period": "[{DATE_10_DAYS_BEFORE}, {DT_NOW.date()}]"}}'
+#     )
+
+#     assert_tables_equality(
+#         target_db,
+#         target_db,
+#         [(test_table_8_target_public, test_table_8_target_actuals)],
+#         ignore_cols=IGNORE_ATTR
+#     )
+
+#     record_to_insert = {
+#         'test1': '88068211942b304833fb91d1063e6837',
+#         'test2': 32088,
+#         'test3': 0.8271914431808318,
+#         'test4': False,
+#         'mod_ts': MOD_DATES['target']
+#     }
+
+#     insert_records(source_db, test_table_8_source_public, [record_to_insert for _ in range(3)])
+
+#     src_row_count = get_table_row_count(target_db, test_table_8_target_public)
+    
+#     assert_dag_run(
+#         'test-transfer-tables-for-actuals-data',
+#         docker_ip,
+#         docker_services,
+#         airflow_credentials,
+#         params = f'{{"period": "[{MOD_DATES["p_start"]}, {MOD_DATES["p_end"]}]"}}'
+#     )
+    
+#     assert_dag_run(
+#         'test-transfer-tables-actuals',
+#         docker_ip,
+#         docker_services,
+#         airflow_credentials,
+#         params = f'{{"period": "[{MOD_DATES["p_start"]}, {MOD_DATES["p_end"]}]"}}'
+#     )
+
+#     assert_compare_table_contents(
+#         target_db,
+#         target_db,
+#         test_table_8_target_public,
+#         test_table_8_target_actuals,
+#         IGNORE_ATTR)
+
+#     assert_table_row_count(target_db, test_table_8_target_public, src_row_count + 3)
+    
+#     assert_table_row_count(target_db, test_table_8_target_actuals, 103)
+
+# # При функциональности ODS
+# def test_transfer_tables_ods_actuals(
+#         docker_ip,
+#         docker_services,
+#         airflow_credentials,
+#         source_db,
+#         target_db,
+#         tgt_metadata,
+#         src_metadata
+#     ):
+#     """
+#     Test function for the ODS to Actuals table transfer.
+
+#     This test verifies the correct functioning of the `transfer_tables_ods_actuals` DAGs,
+#     ensuring that records are correctly transferred and updated between the source and
+#     target tables. The test involves multiple runs of the DAG to validate initial data
+#     transfer, data consistency and deletions.
+
+#     Args:
+#     -----
+#         docker_ip (str): IP address of the Docker host.
+#         docker_services (pytest_docker.plugin.Services): Docker services for managing containers.
+#         airflow_credentials (tuple): Credentials for Airflow in the form (username, password).
+#         source_db (Engine): SQLAlchemy engine for the source database.
+#         target_db (Engine): SQLAlchemy engine for the target database.
+#         tgt_metadata (MetaData): SQLAlchemy MetaData object for the target database.
+
+#     Returns:
+#     --------
+#         None
+
+#     Raises:
+#     -------
+#         AssertionError: If any of the assertions fail.
+#     """
+#     table_name = 'test_table_9'
+    
+#     assert_tables_existence(source_db, [table_name])
+#     assert_tables_existence(target_db, [table_name])
+#     assert_tables_existence(target_db, [table_name], schema='actuals')
+
+#     test_table_9_source = Table(table_name, src_metadata, autoload_with=source_db)
+#     test_table_9_target_public = Table(table_name, tgt_metadata, autoload_with=target_db)
+#     test_table_9_target_actuals = Table(table_name, MetaData(schema='actuals'), autoload_with=target_db)
+    
+#     assert_dag_run(
+#         'test-transfer-tables-for-ods-actuals-data',
+#         docker_ip,
+#         docker_services,
+#         airflow_credentials,
+#         params = f'{{"period": "[{DATE_10_DAYS_BEFORE}, {DT_NOW.date()}]"}}'
+#     )
+    
+#     assert_dag_run(
+#         'test-transfer-tables-ods-actuals',
+#         docker_ip,
+#         docker_services,
+#         airflow_credentials,
+#         params = f'{{"period": "[{DATE_10_DAYS_BEFORE}, {DT_NOW.date()}]"}}'
+#     )
+
+#     assert_tables_equality(
+#         target_db,
+#         target_db,
+#         [(test_table_9_target_public, test_table_9_target_actuals)],
+#         ignore_cols=IGNORE_ATTR
+#     )
+
+#     delete_records(source_db, test_table_9_source, [3, 4])
+    
+#     src_row_count = get_table_row_count(target_db, test_table_9_target_public)
+#     tgt_row_count = get_table_row_count(target_db, test_table_9_target_actuals)
+    
+#     assert_dag_run(
+#         'test-transfer-tables-ods-actuals',
+#         docker_ip,
+#         docker_services,
+#         airflow_credentials,
+#         params = f'{{"period": "[{DATE_10_DAYS_BEFORE}, {DT_NOW.date()}]"}}'
+#     )
+
+#     assert_table_row_count(target_db, test_table_9_target_public, src_row_count)
+#     assert_table_row_count(target_db, test_table_9_target_actuals, tgt_row_count)
+
+#     sql_check_deleted = """
+#         SELECT id
+#         FROM actuals.test_table_9
+#         WHERE id IN (3, 4) AND _deleted IS NOT NULL
+#     """
+#     with target_db.connect() as connection:
+#         result = connection.execute(text(sql_check_deleted))
+#         rows = result.fetchall()
+#         assert len(rows) == 2, "Записи 3 и 4 не имеют заполненное поле _deleted"
+
+# # {"period": "[2024-05-15, 2024-05-17]"}

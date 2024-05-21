@@ -1,1 +1,1 @@
-select * from public.test_table_2 where id between 10 and 20
+select * from public.test_table_2 where id between 10 and 20;

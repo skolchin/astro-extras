@@ -8,7 +8,7 @@ from airflow.models import DAG
 from astro import sql as aql
 from astro.sql.table import Table, Metadata
 from astro_extras import *
-from astro_extras.tests.test_data import TestData
+
 
 with DAG(
     dag_id='test-table-load_save',
@@ -37,6 +37,7 @@ with DAG(
     modified_data = modify_data(data)
     save_table(modified_data, output_table, fail_if_not_exist=False)
 
+
 with DAG(
     dag_id='test-table-save_fail',
     start_date=pendulum.today().add(days=-1),
@@ -54,6 +55,7 @@ with DAG(
     data = load_table('public.test_table_1', 'source_db')
     save_table(data, 'public.tmp_test_table_11', conn_id='target_db')
 
+
 with DAG(
     dag_id='test-transfer-tables',
     start_date=pendulum.today().add(days=-1),
@@ -70,11 +72,12 @@ with DAG(
     transfer_table('test_table_1', 'test_table_1', source_conn_id='source_db', destination_conn_id='target_db') >> \
     transfer_tables(['test_table_2', 'test_table_3'], source_conn_id='source_db', destination_conn_id='target_db')
 
+
 with DAG(
     dag_id='test-transfer-tables-session',
     start_date=pendulum.today().add(days=-1),
     schedule=None,
-    catchup=False,
+    catchup=False
 ) as dag, ETLSession('source_db', 'target_db') as session:
     """ Test for transfer_table() / transfer_tables() functions.
 
@@ -85,6 +88,7 @@ with DAG(
     
     transfer_table('test_table_4', 'test_table_4', 'source_db', 'target_db', session=session) >> \
     transfer_tables(['test_table_5', 'test_table_6'], source_conn_id='source_db', destination_conn_id='target_db', session=session)
+
 
 with DAG(
     dag_id='test-transfer-changed-tables',
@@ -103,17 +107,18 @@ with DAG(
     input_table = Table('test_table_4', conn_id='source_db', metadata=Metadata(schema='public'))
     output_table = Table('test_table_4', conn_id='target_db', metadata=Metadata(schema='public'))
 
-    @aql.run_raw_sql
-    def modify_data(table: Table):
-        return """
-            update {{table}}
-            set test1 = q.test1
-            from (select id, md5(random()::text) as test1 from generate_series(10, 20) id) q
-            where {{table}}.id = q.id
-        """
+    # @aql.run_raw_sql
+    # def modify_data(table: Table):
+    #     return """
+    #         update {{table}}
+    #         set test1 = q.test1
+    #         from (select id, md5(random()::text) as test1 from generate_series(10, 20) id) q
+    #         where {{table}}.id = q.id
+    #     """
+    # modify_data(input_table) >> \
 
-    modify_data(input_table) >> \
     transfer_changed_table(input_table, output_table, 'source_db', 'target_db', session=session)
+
 
 with DAG(
     dag_id='test-transfer-ods-tables-1',
@@ -122,6 +127,7 @@ with DAG(
     catchup=False,
 ) as dag, ETLSession('source_db', 'target_db') as session:
     transfer_ods_table('test_table_7', 'test_table_7', 'source_db', 'target_db', session=session)
+
 
 with DAG(
     dag_id='test-transfer-ods-tables-2',
@@ -152,3 +158,62 @@ with DAG(
     modify_data(input_table) >> \
     remove_data(input_table) >> \
     transfer_ods_table(input_table, output_table, 'source_db', 'target_db', session=session)
+
+
+with DAG(
+    dag_id='test-transfer-tables-for-actuals-data',
+    start_date=pendulum.today().add(days=-1),
+    schedule=None,
+    catchup=False
+) as dag, ETLSession('source_db', 'target_db') as session:
+    """ Test for transfer_actuals_table() / transfer_actuals_tables() functions.
+    """
+    transfer_table('test_table_8', 'test_table_8', 'source_db', 'target_db', session=session)
+
+
+with DAG(
+    dag_id='test-transfer-tables-actuals',
+    start_date=pendulum.today().add(days=-1),
+    schedule=None,
+    catchup=False
+) as dag, ETLSession('target_db', 'target_db') as session:
+    """ Test for transfer_actuals_table() / transfer_actuals_tables() functions.
+    """    
+    input_table = Table('test_table_8', conn_id='target_db', metadata=Metadata(schema='public'))
+    output_table = Table('test_table_8', conn_id='target_db', metadata=Metadata(schema='actuals'))
+    transfer_actuals_table(input_table, output_table, 'target_db', 'target_db', session=session)
+
+
+# ===========================================
+
+# ================ FUTURE ===================
+
+# ===========================================
+
+
+# with DAG(
+#     dag_id='test-transfer-tables-for-ods-actuals-data',
+#     start_date=pendulum.today().add(days=-1),
+#     schedule=None,
+#     catchup=False
+# ) as dag, ETLSession('source_db', 'target_db') as session:
+#     """ Test for transfer_actuals_table() / transfer_actuals_tables() functions.
+#     """
+#     input_table = Table('test_table_9', conn_id='source_db', metadata=Metadata(schema='public'))
+#     output_table = Table('test_table_9', conn_id='target_db', metadata=Metadata(schema='public'))
+#     transfer_ods_table(input_table, output_table, 'source_db', 'target_db', session=session)
+
+
+# with DAG(
+#     dag_id='test-transfer-tables-ods-actuals',
+#     start_date=pendulum.today().add(days=-1),
+#     schedule=None,
+#     catchup=False
+# ) as dag, ETLSession('target_db', 'target_db') as session:
+#     """ Test for transfer_table() / transfer_tables() functions.
+#     """
+#     input_table = Table('test_table_9', conn_id='target_db', metadata=Metadata(schema='public'))
+#     output_table = Table('test_table_9', conn_id='target_db', metadata=Metadata(schema='actuals'))
+#     transfer_actuals_table(input_table, output_table, 'target_db', 'target_db', session=session, as_ods=True)
+    
+# params={"period": "[2024-05-10, 2024-05-21]"}
