@@ -4,9 +4,10 @@
 """ Table operations """
 
 import logging
-import pandas as pd
 import warnings
-from sqlalchemy import text, Table as SqlaTable
+import numpy as np
+import pandas as pd
+from sqlalchemy import text, Table as SqlaTable, Integer, BigInteger, SmallInteger
 from sqlalchemy.engine.base import Connection as SqlaConnection
 
 from airflow.models.dag import DagContext
@@ -30,7 +31,7 @@ from ..utils.postgres_sql import postgres_merge_tables
 
 from typing import Iterable, Type
 
-TOSQL_CHUNK_SIZE: int = 100000
+DEFAULT_CHUNK_SIZE: int = 10000
 """ Chunk size for `pd.to_sql()` calls. Set to value lesser than `DEFAULT_CHUNK_SIZE` in Astro SDK to avoid memory overload """
 
 class TableTransfer(GenericTransfer):
@@ -63,11 +64,14 @@ class TableTransfer(GenericTransfer):
     destination_table: str
     """ Destination table fully-qualified name """
 
-    session: ETLSession | XComArg | None = None
+    session: ETLSession | XComArg | None
     """ ETL Session. Use `ensure_session` to cast to proper session type """
 
-    in_memory_transfer: bool = True
+    in_memory_transfer: bool
     """ Flag to use in-memory transfer (othewise it would be Airflow's cursor-based, which is several times slower) """
+
+    chunk_size: int
+    """ Chunk size for `pd.to_sql() calls """
 
     def __init__(
         self,
@@ -77,6 +81,7 @@ class TableTransfer(GenericTransfer):
         session: ETLSession | None = None,
         in_memory_transfer: bool = False,
         proper_case: bool = False,
+        chunk_size: int | None = DEFAULT_CHUNK_SIZE,
         **kwargs,
     ) -> None:
 
@@ -113,6 +118,7 @@ class TableTransfer(GenericTransfer):
 
         self.session = session
         self.in_memory_transfer = in_memory_transfer
+        self.chunk_size = chunk_size
 
         # flag to prevent multiple _pre_execute() calls
         self._pre_execute_called: bool = False
@@ -142,7 +148,7 @@ class TableTransfer(GenericTransfer):
         if self._pre_execute_called:
             return
 
-        # Set debug level logging if requestedupon DAG start
+        # Set debug level logging if requested upon DAG start
         # Config is: {..., "debug": true}
         assert 'dag_run' in context
         if context['dag_run'].conf.get('debug'):
@@ -185,6 +191,26 @@ class TableTransfer(GenericTransfer):
 
         self._pre_execute_called = True
 
+    def _adjust_dtypes(self, data: pd.DataFrame, table: BaseTable) -> pd.DataFrame:
+        """ Checks whether `data` column dtypes match given `table` ones and reset them to proper type.
+        This could happen if, for example, source has nulls in `int` columns which would have `float` type in dataframe.
+        """
+
+        for col in table.columns:
+            if col.name not in data.columns:
+                self.log.warning(f'Column {col.name} of table {table.name} was not found in dataset')
+                continue
+
+            match col.type:
+                case Integer() | SmallInteger() | BigInteger() if data.dtypes[col.name] == 'float':
+                    self.log.info(f'Correcting column {col.name} dtype from `float` to `int`')
+                    data[col.name] = data[col.name].astype('Int64')
+
+                case _:
+                    pass
+
+        return data
+
     def execute(self, context: Context):
         """ Execute operator """
         self._pre_execute(context)
@@ -192,19 +218,23 @@ class TableTransfer(GenericTransfer):
             return super().execute(context)
         
         # upload source data to memory (might need to use chunks)
+        self.log.info('Using in-memory transfer')
         data = pd.read_sql(self.sql, self.source_db.connection)
         if data is None or data.empty:
             self.log.info('No data to transfer')
-        else:
-            # save to target table
-            # TODO: cast integer NaNs to proper types
-            self._row_count = len(data)
-            self.log.info(f'{self._row_count} records to be transferred')
-            self.dest_db.load_pandas_dataframe_to_table(
-                data, 
-                self.destination, 
-                if_exists='append',
-                chunksize=TOSQL_CHUNK_SIZE)
+            return
+
+        # Adjust dtypes
+        data = self._adjust_dtypes(data, self.destination)
+
+        # save to target table
+        self._row_count = len(data)
+        self.log.info(f'{self._row_count} records to be transferred')
+        self.dest_db.load_pandas_dataframe_to_table(
+            data, 
+            self.destination, 
+            if_exists='append',
+            chunk_size=self.chunk_size)
 
     def get_openlineage_facets_on_complete(self, task_instance):  # skipcq: PYL-W0613
         """
@@ -355,14 +385,14 @@ class OdsTableTransfer(ChangedTableTransfer):
                 data['_modified'] = modified
                 data['_deleted'] = deleted
 
-            self.log.info(f'Saving {data.shape[0]} {category} records to {self.destination_table}')
+            self.log.info(f'Saving {data.shape[0]} {category} records to {self.destination_table} (chunk size is {self.chunk_size})')
             data.to_sql(
                 self.destination.name,
                 con=conn,
                 schema=self.destination.metadata.schema if self.destination.metadata else None,
                 if_exists='append',
                 method='multi',
-                chunksize=TOSQL_CHUNK_SIZE,
+                chunksize=self.chunk_size,
                 index=False,
             )
             self._row_count += len(data)
@@ -386,11 +416,12 @@ class OdsTableTransfer(ChangedTableTransfer):
 
         # compare datasets and save delta frames to target (new/modified/deleted)
         self._row_count = 0
-        with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn, dest_conn.begin():
+        with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn:
             dfn, dfm, dfd = self._compare_datasets(src_conn, dest_conn, stop_on_first_diff=False)
-            self._save_data(dfn, dest_conn, pd.Timestamp.utcnow(), pd.NaT, 'new')
-            self._save_data(dfm, dest_conn, pd.Timestamp.utcnow(), pd.NaT, 'modified')
-            self._save_data(dfd, dest_conn, pd.Timestamp.utcnow(), pd.Timestamp.utcnow(), 'deleted')
+            with dest_conn.begin():
+                self._save_data(dfn, dest_conn, pd.Timestamp.utcnow(), pd.NaT, 'new')
+                self._save_data(dfm, dest_conn, pd.Timestamp.utcnow(), pd.NaT, 'modified')
+                self._save_data(dfd, dest_conn, pd.Timestamp.utcnow(), pd.Timestamp.utcnow(), 'deleted')
 
 class ActualsTableTransfer(TableTransfer):
     """
@@ -467,26 +498,26 @@ class ActualsTableTransfer(TableTransfer):
         same_db = is_same_database_uri(self.source_db.hook.get_uri(), self.dest_db.hook.get_uri())
 
         # Update/merge
-        with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn, dest_conn.begin():
+        with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn:
             if same_db:
                 # Source and destination tables are in the same database, 
                 self.log.info(f'Source and destination tables are in the same database')
+                with dest_conn.begin():
+                    # If `replace_data` is set, purge target table
+                    if self.replace_data:
+                        dest_conn.execute(text(f'delete from {self.destination_table}'))
 
-                # If `replace_data` is set, purge target table
-                if self.replace_data:
-                    dest_conn.execute(text(f'delete from {self.destination_table}'))
-
-                # Merge into target table directly from sql
-                self._row_count = postgres_merge_tables(
-                    conn=dest_conn,
-                    source_table=None,
-                    target_table=self.destination,
-                    source_to_target_columns_map=col_map,
-                    target_conflict_columns=id_cols,
-                    source_sql=sql,
-                    if_conflicts='update'
-                )
-                self.log.info(f'{self._row_count} records transferred')
+                    # Merge into target table directly using source sql
+                    self._row_count = postgres_merge_tables(
+                        conn=dest_conn,
+                        source_table=None,
+                        target_table=self.destination,
+                        source_to_target_columns_map=col_map,
+                        target_conflict_columns=id_cols,
+                        source_sql=sql,
+                        if_conflicts='update'
+                    )
+                    self.log.info(f'{self._row_count} records transferred')
 
             else:
                 # Source and destination tables are in different databases
@@ -496,7 +527,7 @@ class ActualsTableTransfer(TableTransfer):
                 # Load data from source table
                 data = pd.read_sql(sql, src_conn)
                 if data is None or data.empty:
-                    self.log.info('No records to transfer')
+                    self.log.info('No data to transfer')
                     return
                 
                 if self.session:
@@ -515,25 +546,26 @@ class ActualsTableTransfer(TableTransfer):
                         schema=temp_table.metadata.schema if temp_table.metadata else None,
                         if_exists='append',
                         method='multi',
-                        chunksize=TOSQL_CHUNK_SIZE,
+                        chunksize=self.chunk_size,
                         index=False,
                     )
 
-                    # If `replace_data` is set, purge target table
-                    if self.replace_data:
-                        dest_conn.execute(text(f'delete from {self.destination_table}'))
+                    with dest_conn.begin():
+                        # If `replace_data` is set, purge target table
+                        if self.replace_data:
+                            dest_conn.execute(text(f'delete from {self.destination_table}'))
 
-                    # Merge temporary and target tables
-                    self.log.info(f'Merging from {self.dest_db.get_table_qualified_name(temp_table)} to {self.destination_table}')
-                    self._row_count = postgres_merge_tables(
-                        conn=dest_conn,
-                        source_table=temp_table,
-                        target_table=self.destination,
-                        source_to_target_columns_map=col_map,
-                        target_conflict_columns=id_cols,
-                        if_conflicts='update'
-                    )
-                    self.log.info(f'{self._row_count} records transferred')
+                        # Merge temporary and target tables
+                        self.log.info(f'Merging from {self.dest_db.get_table_qualified_name(temp_table)} to {self.destination_table}')
+                        self._row_count = postgres_merge_tables(
+                            conn=dest_conn,
+                            source_table=temp_table,
+                            target_table=self.destination,
+                            source_to_target_columns_map=col_map,
+                            target_conflict_columns=id_cols,
+                            if_conflicts='update'
+                        )
+                        self.log.info(f'{self._row_count} records transferred')
 
                 finally:
                     if not self.keep_temp_table:
@@ -581,7 +613,7 @@ class TimedTableTransfer(ChangedTableTransfer):
                     schema=self.destination.metadata.schema if self.destination.metadata else None,
                     if_exists='append',
                     method='multi',
-                    chunksize=TOSQL_CHUNK_SIZE,
+                    chunksize=self.chunk_size,
                     index=False,
                 )
 
