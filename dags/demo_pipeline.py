@@ -40,9 +40,9 @@ with DAG(
     # For TABLE_DATA, SQL template is used to select only relevant data 
     # (for demo purpose it simply selects all)
 
-    transfer_changed_table(source_types_table, stage_types_table, session=session) >> \
-    transfer_table(source_data_table, stage_data_table, session=session) >> \
-    transfer_ods_table(source_ods_table, stage_ods_table, session=session)
+    transfer_changed_table(source_types_table, stage_types_table, session=session, proper_case=True) >> \
+    transfer_table(source_data_table, stage_data_table, session=session, proper_case=True) >> \
+    transfer_ods_table(source_ods_table, stage_ods_table, session=session, proper_case=True)
 
 with DAG(
     dag_id='stage-actuals-load',
@@ -57,13 +57,15 @@ with DAG(
         [stage_types_table, stage_data_table], 
         [actuals_types_table, actuals_data_table], 
         session=session,
-        keep_temp_table=True) >> \
+        keep_temp_table=False,
+        proper_case=True) >> \
     transfer_actuals_table(
         stage_ods_table, 
         actuals_ods_table, 
         session=session, 
         as_ods=True,
-        keep_temp_table=False)
+        keep_temp_table=False,
+        proper_case=True)
 
 with DAG(
     dag_id='actuals-dwh-load',

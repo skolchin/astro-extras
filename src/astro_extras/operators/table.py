@@ -14,7 +14,6 @@ from airflow.utils.context import Context
 from airflow.models.xcom_arg import XComArg
 from airflow.utils.task_group import TaskGroup
 from airflow.exceptions import AirflowFailException
-from airflow.providers.common.sql.hooks.sql import DbApiHook
 from airflow.operators.generic_transfer import GenericTransfer
 
 from astro import sql as aql
@@ -30,6 +29,9 @@ from ..utils.data_compare import compare_datasets, compare_timed_dict
 from ..utils.postgres_sql import postgres_merge_tables
 
 from typing import Iterable, Type
+
+TOSQL_CHUNK_SIZE: int = 100000
+""" Chunk size for `pd.to_sql()` calls. Set to value lesser than `DEFAULT_CHUNK_SIZE` in Astro SDK to avoid memory overload """
 
 class TableTransfer(GenericTransfer):
     """
@@ -198,7 +200,11 @@ class TableTransfer(GenericTransfer):
             # TODO: cast integer NaNs to proper types
             self._row_count = len(data)
             self.log.info(f'{self._row_count} records to be transferred')
-            self.dest_db.load_pandas_dataframe_to_table(data, self.destination, if_exists='append')
+            self.dest_db.load_pandas_dataframe_to_table(
+                data, 
+                self.destination, 
+                if_exists='append',
+                chunksize=TOSQL_CHUNK_SIZE)
 
     def get_openlineage_facets_on_complete(self, task_instance):  # skipcq: PYL-W0613
         """
@@ -356,6 +362,7 @@ class OdsTableTransfer(ChangedTableTransfer):
                 schema=self.destination.metadata.schema if self.destination.metadata else None,
                 if_exists='append',
                 method='multi',
+                chunksize=TOSQL_CHUNK_SIZE,
                 index=False,
             )
             self._row_count += len(data)
@@ -450,11 +457,10 @@ class ActualsTableTransfer(TableTransfer):
         if not id_cols:
             raise AirflowFailException(f'Could not detect primary key on {self.destination_table}')
 
-        # Wrap data selection query into `select distinct on` in order to avoid having multiple IDs error
-        # Also, replace `t.*` with exact columns list and proper session_id
-        id_cols_str = ",".join(id_cols)
-        all_cols_str = f'{self.session.session_id} as session_id, ' + ",".join([col for col in col_map if col != 'session_id'])
-        sql = f'select distinct on ({id_cols_str}) {all_cols_str} from ({self.sql}) q order by {id_cols_str}, q.session_id desc'
+        # Replace `t.id` with ids and `t.*` with selection columns list and proper session_id
+        id_cols_str = ", ".join(id_cols)
+        all_cols_str = f'{self.session.session_id} as session_id, ' + ", ".join([col for col in col_map if col != 'session_id'])
+        sql = self.sql.replace('t.id', id_cols_str).replace('t.*', all_cols_str)
         self.log.info(f'Source extraction SQL:\n{sql}')
 
         # Check whether the hooks point to the same database
@@ -509,6 +515,7 @@ class ActualsTableTransfer(TableTransfer):
                         schema=temp_table.metadata.schema if temp_table.metadata else None,
                         if_exists='append',
                         method='multi',
+                        chunksize=TOSQL_CHUNK_SIZE,
                         index=False,
                     )
 
@@ -574,6 +581,7 @@ class TimedTableTransfer(ChangedTableTransfer):
                     schema=self.destination.metadata.schema if self.destination.metadata else None,
                     if_exists='append',
                     method='multi',
+                    chunksize=TOSQL_CHUNK_SIZE,
                     index=False,
                 )
 
