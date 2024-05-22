@@ -76,11 +76,14 @@ def is_same_database_uri(uri_1: str, uri_2: str) -> bool:
 
 def adjust_table_name_case(table: BaseTable, db: BaseDatabase) -> BaseTable:
 
+    name = table.name
+    schema = table.metadata.schema if table.metadata and table.metadata.schema else None
+    
     match db.sql_type:
         case 'postgresql':
             # names must be lower case
-            new_name = table.name.lower()
-            new_schema = table.metadata.schema.lower() if table.metadata and table.metadata.schema else None
+            new_name = name.lower() if not name.startswith('"') else name
+            new_schema = schema.lower() if schema is not None and not schema.startswith('"') else schema
             return Table(
                 new_name,
                 conn_id=table.conn_id, 
@@ -90,8 +93,8 @@ def adjust_table_name_case(table: BaseTable, db: BaseDatabase) -> BaseTable:
 
         case 'oracle':
             # names must be upper case
-            new_name = table.name.upper()
-            new_schema = table.metadata.schema.upper() if table.metadata and table.metadata.schema else None
+            new_name = name.upper() if not name.startswith('"') else name
+            new_schema = schema.upper() if schema is not None and not schema.startswith('"') else schema
             return Table(
                 new_name,
                 conn_id=table.conn_id, 
