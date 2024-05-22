@@ -73,7 +73,8 @@ class TableTransfer(GenericTransfer):
         source_table: BaseTable,
         destination_table: BaseTable,
         session: ETLSession | None = None,
-        in_memory_transfer: bool = True,
+        in_memory_transfer: bool = False,
+        proper_case: bool = False,
         **kwargs,
     ) -> None:
 
@@ -82,9 +83,14 @@ class TableTransfer(GenericTransfer):
         self.dest_db = create_database(destination_table.conn_id)
 
         # source and target AstroSDK tables
-        # temporary solution: adjust table name case to support DB requirements
-        self.source = adjust_table_name_case(source_table, self.source_db)
-        self.destination = adjust_table_name_case(destination_table, self.dest_db)
+        if not proper_case:
+            # adjust table name case to support DB requirements
+            self.source = source_table
+            self.destination = destination_table
+        else:
+            # adjust table name case to support DB requirements
+            self.source = adjust_table_name_case(source_table, self.source_db)
+            self.destination = adjust_table_name_case(destination_table, self.dest_db)
 
         # source and target fully-qualified table names
         # self.destination_table will be set by `super().__init__()`
@@ -189,6 +195,7 @@ class TableTransfer(GenericTransfer):
             self.log.info('No data to transfer')
         else:
             # save to target table
+            # TODO: cast integer NaNs to proper types
             self._row_count = len(data)
             self.log.info(f'{self._row_count} records to be transferred')
             self.dest_db.load_pandas_dataframe_to_table(data, self.destination, if_exists='append')
