@@ -5,10 +5,11 @@
 
 import logging
 import warnings
-import numpy as np
 import pandas as pd
+from functools import cached_property
 from sqlalchemy import text, Table as SqlaTable, Integer, BigInteger, SmallInteger
 from sqlalchemy.engine.base import Connection as SqlaConnection
+from sqlalchemy.exc import InvalidRequestError as SqlaInvalidRequestError
 
 from airflow.models.dag import DagContext
 from airflow.utils.context import Context
@@ -24,12 +25,12 @@ from astro.databases.base import BaseDatabase
 from astro.airflow.datasets import kwargs_with_datasets
 
 from .session import ETLSession, ensure_session
-from ..utils.utils import ensure_table, schedule_ops, is_same_database_uri, adjust_table_name_case
+from ..utils.utils import ensure_table, schedule_ops, is_same_database_uri
 from ..utils.template import get_template, get_template_file, get_predefined_template
 from ..utils.data_compare import compare_datasets, compare_timed_dict
 from ..utils.postgres_sql import postgres_merge_tables
 
-from typing import Iterable, Type
+from typing import Iterable, Type, Tuple
 
 DEFAULT_CHUNK_SIZE: int = 10000
 """ Chunk size for `pd.to_sql()` calls. Set to value lesser than `DEFAULT_CHUNK_SIZE` in Astro SDK to avoid memory overload """
@@ -53,13 +54,13 @@ class TableTransfer(GenericTransfer):
     """ Destination database object """
 
     source: BaseTable
-    """ Source table object """
+    """ Source table object. See also `source_table_def` property """
 
     source_table: str
     """ Source table fully-qualified name """
 
     destination: BaseTable
-    """ Destination table object """
+    """ Destination table object. See also `dest_table_def` property """
 
     destination_table: str
     """ Destination table fully-qualified name """
@@ -80,7 +81,6 @@ class TableTransfer(GenericTransfer):
         destination_table: BaseTable,
         session: ETLSession | None = None,
         in_memory_transfer: bool = False,
-        proper_case: bool = False,
         chunk_size: int | None = DEFAULT_CHUNK_SIZE,
         **kwargs,
     ) -> None:
@@ -90,14 +90,8 @@ class TableTransfer(GenericTransfer):
         self.dest_db = create_database(destination_table.conn_id)
 
         # source and target AstroSDK tables
-        if not proper_case:
-            # adjust table name case to support DB requirements
-            self.source = source_table
-            self.destination = destination_table
-        else:
-            # adjust table name case to support DB requirements
-            self.source = adjust_table_name_case(source_table, self.source_db)
-            self.destination = adjust_table_name_case(destination_table, self.dest_db)
+        self.source = source_table
+        self.destination = destination_table
 
         # source and target fully-qualified table names
         # self.destination_table will be set by `super().__init__()`
@@ -107,7 +101,8 @@ class TableTransfer(GenericTransfer):
         task_id = kwargs.pop('task_id', f'transfer-{self.source_table.replace(".", "_")}')
 
         # sql is either passed in by the caller or rendered from template
-        sql = kwargs.pop('sql', self._get_sql(self.source, self.source_db, session))
+        # here, original `source_table` is used to match filename case
+        sql = kwargs.pop('sql', self._get_sql(source_table, self.source_db, session))
 
         super().__init__(task_id=task_id,
                          sql=sql,
@@ -131,7 +126,7 @@ class TableTransfer(GenericTransfer):
 
         # Check whether a template SQL exists for given table under dags\templates\<dag_id>
         # Actual query will be loaded by Airflow templating itself
-        full_name = db.get_table_qualified_name(table) + (suffix or '')
+        full_name = db.get_table_qualified_name(table)
         if (sql_file := get_template_file(full_name, '.sql')) or (sql_file := get_template_file(table.name, '.sql')) :
             self.log.info(f'Using template file {sql_file}')
             return sql_file
@@ -140,7 +135,9 @@ class TableTransfer(GenericTransfer):
         # SQL file names are fixed according to whether we do run under ETL session or not
         template_name = 'table_transfer_nosess.sql' if not session else 'table_transfer_sess.sql'
         template = get_predefined_template(template_name)
-        return template.render(source_table=full_name)
+        sql = template.render(source_table=full_name + (suffix or ''))
+        self.log.info(f'Using predefined SQL template {template_name} rendered as {sql}')
+        return sql
 
     def _pre_execute(self, context: Context):
         """ Internal - run before execution """
@@ -170,32 +167,49 @@ class TableTransfer(GenericTransfer):
             raise AirflowFailException('destination connection not specified')
         if self.source_conn_id == self.destination_conn_id and self.source_table == self.destination_table:
             raise AirflowFailException('Source and destination must not be the same')
-        
-        # Load source and target table definitions
-        # consider adding a flag to skip one or both - usable for slow connections
-        src_meta = self.source.sqlalchemy_metadata
-        src_meta.reflect(bind=self.source_db.connection, only=[self.source.name])
-        if (src_sqla_table := src_meta.tables.get(self.source_table)) is None:
-            raise AirflowFailException(f'Table {self.source_table} does not exist on {self.source_conn_id}')
-        for c in src_sqla_table.columns:
-            self.source.columns.append(c)
-        self.log.info(f'Table {self.source_table} columns: {",".join([f"{c.name} {c.type}" for c in self.source.columns])}')
-
-        dest_meta = self.destination.sqlalchemy_metadata
-        dest_meta.reflect(bind=self.dest_db.connection, only=[self.destination.name])
-        if (dest_sqla_table := dest_meta.tables.get(self.destination_table)) is None:
-            raise AirflowFailException(f'Table {self.destination_table} does not exist on {self.destination_conn_id}')
-        for c in dest_sqla_table.columns:
-            self.destination.columns.append(c)
-        self.log.info(f'Table {self.destination_table} columns: {",".join([f"{c.name} {c.type}" for c in self.destination.columns])}')
 
         self._pre_execute_called = True
+
+    def _load_table_def(self, base_table: BaseTable, db: BaseDatabase) -> BaseTable:
+        """ Internal - load single table definition """
+        try:
+            # Use base_table's SQLA metadata to retrieve table columns from database
+            full_name = db.get_table_qualified_name(base_table)
+            meta = base_table.sqlalchemy_metadata
+            meta.reflect(bind=db.connection, only=[base_table.name])
+        except SqlaInvalidRequestError as ex:
+            self.log.error(f'Could not load table {full_name} structure on {db.conn_id}')
+            return base_table
+
+        if (sqla_table := meta.tables.get(full_name, None)) is None:
+            self.log.error(f'Could not find table {full_name} on {db.conn_id}')
+            return base_table
+
+        # Construct new table object containing all props of `base_table` and additional columns metadata
+        result_table = Table(
+            name=base_table.name,
+            conn_id=db.conn_id,
+            metadata=base_table.metadata,
+            temp=base_table.temp,
+            columns=sqla_table.columns)
+        
+        self.log.debug(f'Table {full_name} columns: {",".join([f"{c.name} {c.type}" for c in result_table.columns])}')
+        return result_table
+
+    @cached_property
+    def source_table_def(self) -> BaseTable:
+        """ Source table object populated with metadata """
+        return self._load_table_def(self.source, self.source_db)
+
+    @cached_property
+    def dest_table_def(self) -> BaseTable:
+        """ Destination table object populated with metadata """
+        return self._load_table_def(self.destination, self.dest_db)
 
     def _adjust_dtypes(self, data: pd.DataFrame, table: BaseTable) -> pd.DataFrame:
         """ Checks whether `data` column dtypes match given `table` ones and reset them to proper type.
         This could happen if, for example, source has nulls in `int` columns which would have `float` type in dataframe.
         """
-
         for col in table.columns:
             if col.name not in data.columns:
                 self.log.warning(f'Column {col.name} of table {table.name} was not found in dataset')
@@ -203,7 +217,7 @@ class TableTransfer(GenericTransfer):
 
             match col.type:
                 case Integer() | SmallInteger() | BigInteger() if data.dtypes[col.name] == 'float':
-                    self.log.info(f'Correcting column {col.name} dtype from `float` to `int`')
+                    self.log.info(f'Coersing column {col.name} dtype from `float` to `int`')
                     data[col.name] = data[col.name].astype('Int64')
 
                 case _:
@@ -217,30 +231,38 @@ class TableTransfer(GenericTransfer):
         if not self.in_memory_transfer:
             return super().execute(context)
         
-        # upload source data to memory (might need to use chunks)
-        self.log.info('Using in-memory transfer')
+        # upload source data to memory
+        self.log.info(f'In-memory transfer using {self.sql}')
         data = pd.read_sql(self.sql, self.source_db.connection)
         if data is None or data.empty:
             self.log.info('No data to transfer')
             return
 
         # Adjust dtypes
-        data = self._adjust_dtypes(data, self.destination)
+        data = self._adjust_dtypes(data, self.dest_table_def)
 
-        # save to target table
-        self._row_count = len(data)
-        self.log.info(f'{self._row_count} records to be transferred')
-        self.dest_db.load_pandas_dataframe_to_table(
-            data, 
-            self.destination, 
-            if_exists='append',
-            chunk_size=self.chunk_size)
+        with self.dest_db.connection as conn, conn.begin():
+            # run preoperator
+            if self.preoperator:
+                self.log.info(f'Executing: {self.preoperator}')
+                conn.execute(text(self.preoperator))
 
-    def get_openlineage_facets_on_complete(self, task_instance):  # skipcq: PYL-W0613
-        """
-        Collect the input, output, job and run facets for DataframeOperator
-        """
-        from airflow.providers.openlineage.extractors.base import OperatorLineage
+            # save to target table
+            self._row_count = len(data)
+            self.log.info(f'{self._row_count} records to be transferred (chunk size is {self.chunk_size})')
+            data.to_sql(
+                self.destination.name,
+                con=conn,
+                schema=self.destination.metadata.schema if self.destination.metadata else None,
+                if_exists='append',
+                method='multi',
+                chunksize=self.chunk_size,
+                index=False,
+            )
+
+    def _make_openlineage_facets(self, task_instance):
+        """ Make OpenLineage facets and dataset info """
+
         from openlineage.client.run import Dataset
         from openlineage.client.facet import (
             BaseFacet,
@@ -251,69 +273,54 @@ class TableTransfer(GenericTransfer):
             SqlJobFacet,
         )
 
-        input_dataset: list[Dataset] = []
+        def _make_dataset(table_def: BaseTable, db: BaseDatabase) -> Dataset:
+            ns = db.openlineage_dataset_namespace()
+            full_name = db.get_table_qualified_name(table_def)
+            if (dbname := table_def.metadata.database or db.default_metadata.database):
+                full_name = f'{dbname}.{full_name}'
+
+            return Dataset(
+                namespace=ns,
+                name=f'{full_name}',
+                facets={
+                    "schema": SchemaDatasetFacet(
+                        fields=[SchemaField(name=col.name, type=str(col.type)) for col in table_def.columns],
+                    ),
+                    "dataSource": DataSourceDatasetFacet(
+                        name=full_name, uri=f"{ns}/{full_name}"
+                    ),
+                })
+
+        # Construct input dataset...
         if self.source and self.source.openlineage_emit_temp_table_event():
-            input_dataset = [
-                Dataset(
-                    namespace=self.source.openlineage_dataset_namespace(),
-                    name=self.source.openlineage_dataset_name(),
-                    facets={
-                        "schema": SchemaDatasetFacet(
-                            fields=[
-                                SchemaField(
-                                    name=f'schema: {self.source.metadata.schema or self.source_db.default_metadata.schema}',
-                                    type='string',
-                                ),
-                                SchemaField(
-                                    name=f'database: {self.source.metadata.database or self.source_db.default_metadata.database}',
-                                    type='string',
-                                ),
-                                *[SchemaField(name=col.name, type=str(col.type)) for col in self.source.columns],
-                            ]
-                        ),
-                        "dataSource": DataSourceDatasetFacet(
-                            name=self.source_table, uri=self.source.openlineage_dataset_uri()
-                        ),
-                    },
-                ),
-            ]
+            source_datasets = [_make_dataset(self.source_table_def, self.source_db)]
+        else:
+            source_datasets = []
 
-        output_dataset: list[Dataset] = []
-        if self.destination and self.destination.openlineage_emit_temp_table_event():  # pragma: no cover
-            output_dataset = [
-                Dataset(
-                    namespace=self.destination.openlineage_dataset_namespace(),
-                    name=self.destination.openlineage_dataset_name(),
-                    facets={
-                        "schema": SchemaDatasetFacet(
-                            fields=[
-                                SchemaField(
-                                    name=f'schema: {self.destination.metadata.schema or self.dest_db.default_metadata.schema}',
-                                    type='string',
-                                ),
-                                SchemaField(
-                                    name=f'database: {self.destination.metadata.database or self.dest_db.default_metadata.database}',
-                                    type='string',
-                                ),
-                                *[SchemaField(name=col.name, type=str(col.type)) for col in self.destination.columns],
-                            ]
-                        ),
-                        "dataSource": DataSourceDatasetFacet(
-                            name=self.destination_table, uri=self.destination.openlineage_dataset_uri()
-                        ),
-                        "outputStatistics": OutputStatisticsOutputDatasetFacet(
-                            rowCount=self._row_count,
-                        ),
-                    },
-                ),
-            ]
+        # ... output dataset ...
+        if self.destination and self.destination.openlineage_emit_temp_table_event():
+            dest_datasets = [_make_dataset(self.dest_table_def, self.dest_db)]
+        else:
+            dest_datasets = []
 
-        run_facets: dict[str, BaseFacet] = {}
-        job_facets: dict[str, BaseFacet] = {
-            "sql": SqlJobFacet(query=str(self.sql))
+        # ... runtime facets ...
+        run_facets: dict[str, BaseFacet] = {
+            "outputStatistics": OutputStatisticsOutputDatasetFacet(
+                rowCount=self._row_count,
+            ),
         }
+        job_facets: dict[str, BaseFacet] = {
+            "sql": SqlJobFacet(query=str(self.sql)),
+        }
+        return source_datasets, dest_datasets, run_facets, job_facets
+
+    def get_openlineage_facets_on_complete(self, task_instance):  # skipcq: PYL-W0613
+        """ Provide OpenLineage information """
+        from airflow.providers.openlineage.extractors.base import OperatorLineage
+
+        inputs, outputs, run_facets, job_facets = self._make_openlineage_facets(task_instance)
         return OperatorLineage(
-            inputs=input_dataset, outputs=output_dataset, run_facets=run_facets, job_facets=job_facets
+            inputs=inputs, outputs=outputs, run_facets=run_facets, job_facets=job_facets
         )
 
 class ChangedTableTransfer(TableTransfer):
@@ -400,18 +407,18 @@ class OdsTableTransfer(ChangedTableTransfer):
     def execute(self, context: Context):
         """ Execute operator """
 
-        # All the checks
+        # All the checks and strcture load
         self._pre_execute(context)
 
         # Verify target table structure
         n_col = 0
         if self.session is not None:
-            if self.destination.columns[n_col].name.lower() != 'session_id':
+            if self.dest_table_def.columns[n_col].name.lower() != 'session_id':
                 raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: `session_id` missing or at improper place')
             n_col += 1
-        if self.destination.columns[n_col].name.lower() != '_modified':
+        if self.dest_table_def.columns[n_col].name.lower() != '_modified':
             raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: `_modified` column missing or at improper place')
-        if self.destination.columns[n_col+1].name.lower() != '_deleted':
+        if self.dest_table_def.columns[n_col+1].name.lower() != '_deleted':
             raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: `_deleted` column missing or at improper place')
 
         # compare datasets and save delta frames to target (new/modified/deleted)
@@ -466,16 +473,16 @@ class ActualsTableTransfer(TableTransfer):
         # Verify structure
         if self.as_ods:
             # Check source and target meet the ODS requirements
-            if not [c for c in self.source.columns if c.name == '_deleted']:
+            if not [c for c in self.source_table_def.columns if c.name == '_deleted']:
                 raise AirflowFailException(f'Source table {self.source_table} does not have `_deleted` column required for ODS-style transfer')
-            if not [c for c in self.destination.columns if c.name == '_deleted']:
+            if not [c for c in self.dest_table_def.columns if c.name == '_deleted']:
                 raise AirflowFailException(f'Target table {self.destination_table} does not have `_deleted` column required for ODS-style transfer')
 
         # Build a source-to-target column mapping
         col_map = {}
         id_cols = []
-        for src_col in self.source.columns:
-            dest_cols = [c for c in self.destination.columns if c.name.lower() == src_col.name.lower()]
+        for src_col in self.source_table_def.columns:
+            dest_cols = [c for c in self.dest_table_def.columns if c.name.lower() == src_col.name.lower()]
             if not dest_cols:
                 self.log.warning(f'Column {src_col.name} was not found in {self.destination_table} table, skipping')
             else:
@@ -530,6 +537,7 @@ class ActualsTableTransfer(TableTransfer):
                     self.log.info('No data to transfer')
                     return
                 
+                data = self._adjust_dtypes(data, self.dest_table_def)
                 if self.session:
                     data['session_id'] = self.session.session_id
                     col_map['session_id'] = 'session_id'
@@ -731,10 +739,13 @@ def declare_tables(
         conn_id: str | None = None,
         schema: str | None = None,
         database: str | None = None,
+        lowercase: bool = False
 ) -> Iterable[BaseTable]:
     """ Convert list of string table names to list of `Table` objects """
-
-    return [ensure_table(t, conn_id, schema, database) for t in table_names]
+    if not lowercase:
+        return [ensure_table(t, conn_id, schema, database) for t in table_names]
+    else:
+        return [ensure_table(t.lower(), conn_id, schema, database) for t in table_names]
 
 def _do_transfer_table(
         op_cls: Type[GenericTransfer],
