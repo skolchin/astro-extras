@@ -38,8 +38,8 @@ def get_table_row_count(
     """
     count_query = select(func.count()).select_from(table)
 
-    with engine.connect() as connection:
-        return connection.execute(count_query).scalar()
+    with engine.begin() as conn:
+        return conn.execute(count_query).scalar()
 
 
 def get_table_data(
@@ -60,8 +60,8 @@ def get_table_data(
     --------
         pd.DataFrame: DataFrame containing the table data.
     """
-    with engine.connect() as connection:
-        result = connection.execute(select(table))
+    with engine.begin() as conn:
+        result = conn.execute(select(table))
         data = pd.DataFrame(result.fetchall(), columns=result.keys())
     
     data.columns = data.columns.str.lower()
