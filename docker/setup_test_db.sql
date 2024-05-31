@@ -26,6 +26,7 @@ create table public."connection" (
 insert into public."connection" (conn_id,conn_type,description,host,"schema",login,"password",port,is_encrypted,is_extra_encrypted,extra) 
 values
 	 ('target_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
+     ('actuals_db','postgres','','postgres','actuals_db','postgres','918ja620_82',5432,false,false,''),
 	 ('source_db','postgres','','postgres','source_db','postgres','918ja620_82',5432,false,false,'');
 
 \c source_db
@@ -148,8 +149,6 @@ select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
 from generate_series(1, 100) i;
 
 \c target_db
-
-CREATE SCHEMA IF NOT EXISTS actuals;
 
 create table public.sessions(
     session_id serial not null primary key,
