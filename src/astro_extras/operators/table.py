@@ -553,6 +553,7 @@ class ActualsTableTransfer(TableTransfer):
                 if data is None or data.empty:
                     self.log.info('No data to transfer')
                     return
+                self.log.info(f'{len(data)} records to be transferred (chunk size is {self.chunk_size})')
                 
                 data = self._adjust_dtypes(data, self.dest_table_def)
                 if self.session:
@@ -562,6 +563,7 @@ class ActualsTableTransfer(TableTransfer):
                 # Temp table has to be created 1st, otherwise it might be column types mismatch
                 temp_sqla_table = SqlaTable(temp_table.name, temp_table.sqlalchemy_metadata, *([c.copy() for c in self.source_table_def.columns]))
                 self.destination.sqlalchemy_metadata.create_all(bind=dest_conn, tables=[temp_sqla_table], checkfirst=False)
+                self.log.info(f'{temp_table.name} temporary table created')
 
                 try:
                     # Save data to temporary table
@@ -574,10 +576,12 @@ class ActualsTableTransfer(TableTransfer):
                         chunksize=self.chunk_size,
                         index=False,
                     )
+                    self.log.info(f'Source data transferred to {temp_table.name}')
 
                     with dest_conn.begin():
                         # If `replace_data` is set, purge target table
                         if self.replace_data:
+                            self.log.info(f'Cleaning up destination table {self.destination_table}')
                             dest_conn.execute(text(f'delete from {self.destination_table}'))
 
                         # Merge temporary and target tables
