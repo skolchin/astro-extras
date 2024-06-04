@@ -422,17 +422,13 @@ def get_session_period(context: Context | None = None) -> Tuple[str, str]:
         if len(period) < 2:
             raise AirflowFailException('Invalid period: two valid dates in ISO format must be specified, got %s instead', period_str)
 
-        # If no time part is provided in the upper period bound,
-        # consider this to be date-only and add 1 day to align to days'end
-        # For example, specifying period = ["2023-05-01", "2023-05-01"] will be converted
-        # to ["2023-05-01 00:00:00", "2023-05-02 00:00:00"]
-        if period[1].hour == 0 and period[1].minute == 0 and period[1].second == 0:
-            period[1] += timedelta(days=1)
-
         if period[1] <= period[0]:
             raise AirflowFailException('Upper period bound must be greater than lower bound')
     else:
-        period = [context['data_interval_start'], context['data_interval_end']]
-        period = [datetime_to_tz(x, TIMEZONE) for x in period]
+        period = []
+        for dt in [context['data_interval_start'], context['data_interval_end']]:
+            if dt.tzinfo is not None and dt.tzinfo == TIMEZONE:
+                dt = dt.replace(tzinfo=None)
+            period.append(dt)
 
     return tuple([x.isoformat() for x in period])

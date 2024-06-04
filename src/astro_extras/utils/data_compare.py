@@ -119,12 +119,12 @@ def compare_datasets(
 
     diff_cols = set(src_cols).symmetric_difference(trg_cols).difference(exclude_cols)
     if diff_cols:
-        logger.warning(f'Diff in columns detected: {diff_cols}.\n' + 
+        logger.warning(f'Сolumn difference detected: {diff_cols}.\n' + 
                        'Operation will continue, but may result in incomplete data transfer or errors.\n' +
                        'Review the datasets and correct structure to avoid that.')
 
     if df_src.shape[0] != df_trg.shape[0] and stop_on_first_diff:
-        logger.info('Number of records in source and target datasets is different')
+        logger.info('Source and target datasets has different number of records, comparsion stopped')
         return False
 
     _check_timestamp_types(df_src, df_trg, exclude_cols)
@@ -138,7 +138,7 @@ def compare_datasets(
     df_merged = pd.merge(df_src.reset_index(), df_trg.reset_index(), how='outer', on=id_cols,
                             copy=False, indicator=True, sort=False)
     if df_merged['_merge'].eq('right_only').any():
-        logger.info('Target dataset contains records not present on the source')
+        logger.info('Target dataset contains records which do not exist on the source')
         if stop_on_first_diff:
             return False
 

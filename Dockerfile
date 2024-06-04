@@ -1,4 +1,6 @@
-FROM apache/airflow:slim-2.8.4-python3.10
+ARG REG_PROXY
+ARG AIRFLOW_UID=50000
+FROM ${REG_PROXY}apache/airflow:slim-2.8.4-python3.10
 
 USER 0
 RUN apt-get update && apt-get install -y nano gosu

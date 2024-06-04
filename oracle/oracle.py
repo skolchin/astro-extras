@@ -129,9 +129,9 @@ class OracleDatabase(BaseDatabase):
         :param table: The table we want to retrieve the qualified name for.
         """
         if table.metadata and table.metadata.schema:
-            qualified_name = f"{table.metadata.schema.lower()}.{table.name}"
+            qualified_name = f"{table.metadata.schema.upper()}.{table.name.upper()}"
         else:
-            qualified_name = table.name
+            qualified_name = table.name.upper()
         return qualified_name
 
     def merge_table(

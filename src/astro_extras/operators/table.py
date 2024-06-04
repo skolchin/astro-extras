@@ -7,7 +7,8 @@ import logging
 import warnings
 import pandas as pd
 from functools import cached_property
-from sqlalchemy import text, Table as SqlaTable, Integer, BigInteger, SmallInteger
+from sqlalchemy import Table as SqlaTable, MetaData as SqlaMetadata
+from sqlalchemy import text, Integer, BigInteger, SmallInteger
 from sqlalchemy.engine.base import Connection as SqlaConnection
 from sqlalchemy.exc import InvalidRequestError as SqlaInvalidRequestError
 
@@ -54,13 +55,13 @@ class TableTransfer(GenericTransfer):
     """ Destination database object """
 
     source: BaseTable
-    """ Source table object. See also `source_table_def` property """
+    """ Source table object as it was passed in. Property `source_table_def` reflects the same table but filled with columns structure """
 
     source_table: str
     """ Source table fully-qualified name """
 
     destination: BaseTable
-    """ Destination table object. See also `dest_table_def` property """
+    """ Destination table object as it was passed in. Property `dest_table_def` reflects the same table but filled with columns structure """
 
     destination_table: str
     """ Destination table fully-qualified name """
@@ -127,6 +128,7 @@ class TableTransfer(GenericTransfer):
         # Check whether a template SQL exists for given table under dags\templates\<dag_id>
         # Actual query will be loaded by Airflow templating itself
         full_name = db.get_table_qualified_name(table)
+        self.log.info(f'Looking up a template file for table {full_name}')
         if (sql_file := get_template_file(full_name, '.sql')) or (sql_file := get_template_file(table.name, '.sql')) :
             self.log.info(f'Using template file {sql_file}')
             return sql_file
@@ -172,11 +174,14 @@ class TableTransfer(GenericTransfer):
 
     def _load_table_def(self, base_table: BaseTable, db: BaseDatabase) -> BaseTable:
         """ Internal - load single table definition """
+        # Use base_table's SQLA metadata to retrieve table columns from database
+        # There's something that looks like a bug in SQLA - 
+        # only lower-case schema/table names could be used with reflect
         try:
-            # Use base_table's SQLA metadata to retrieve table columns from database
-            full_name = db.get_table_qualified_name(base_table)
-            meta = base_table.sqlalchemy_metadata
-            meta.reflect(bind=db.connection, only=[base_table.name])
+            full_name = db.get_table_qualified_name(base_table).lower()
+            meta = SqlaMetadata(schema=base_table.metadata.schema.lower() \
+                                if base_table.metadata and base_table.metadata.schema else None)
+            meta.reflect(bind=db.connection, only=[base_table.name.lower()])
         except SqlaInvalidRequestError as ex:
             self.log.error(f'Could not load table {full_name} structure on {db.conn_id}')
             return base_table
@@ -292,13 +297,13 @@ class TableTransfer(GenericTransfer):
                 })
 
         # Construct input dataset...
-        if self.source and self.source.openlineage_emit_temp_table_event():
+        if self.source_table_def.openlineage_emit_temp_table_event():
             source_datasets = [_make_dataset(self.source_table_def, self.source_db)]
         else:
             source_datasets = []
 
         # ... output dataset ...
-        if self.destination and self.destination.openlineage_emit_temp_table_event():
+        if self.dest_table_def.openlineage_emit_temp_table_event():
             dest_datasets = [_make_dataset(self.dest_table_def, self.dest_db)]
         else:
             dest_datasets = []
@@ -360,8 +365,11 @@ class ChangedTableTransfer(TableTransfer):
 
         logger.info(f'Executing: {self.sql}')
         df_src = pd.read_sql(self.sql, src_conn)
+        logger.info(f'{len(df_src)} records selected on source')
+
         logger.info(f'Executing: {self.destination_sql}')
         df_trg  = pd.read_sql(self.destination_sql, dest_conn)
+        logger.info(f'{len(df_trg)} records selected on target')
 
         return compare_datasets(df_src, df_trg, stop_on_first_diff=stop_on_first_diff, logger=logger)
 
@@ -444,24 +452,33 @@ class ActualsTableTransfer(TableTransfer):
         source_table: BaseTable,
         destination_table: BaseTable,
         session: ETLSession | None = None,
+        transfer_delta: bool = True,
         as_ods: bool = False,
         keep_temp_table: bool = False,
         replace_data: bool = False,
         **kwargs,
     ) -> None:
-        super().__init__(source_table=source_table, destination_table=destination_table, session=session, **kwargs)
+        self.transfer_delta = transfer_delta
         self.as_ods = as_ods
         self.keep_temp_table = keep_temp_table
         self.replace_data = replace_data
+        
+        super().__init__(source_table=source_table, destination_table=destination_table, session=session, **kwargs)
 
     def _get_sql(self, table: BaseTable, db: BaseDatabase, session: ETLSession | None = None, suffix: str | None = None) -> str:
         """ Internal - get a sql statement or template for given table """
 
-        # Get template SQL from package resources
-        # The template defines `select` query which takes data from source limited 
-        # to one's loaded with successfull sessions with the same loading period as this operator has
+        # Find table-specific template
         full_name = db.get_table_qualified_name(table)
-        template = get_predefined_template('table_actuals_select.sql')
+        if (sql := get_template(full_name, '.sql', fail_if_not_found=False)):
+            # If such template exist, replace table name with subquery
+            # The subquery should contain the same subset of columns with target table, 
+            # otherwise it might be problems with dataset comparsion
+            full_name = f'({sql})'
+
+        # Get template SQL from package resources
+        # The template defines `select` query which takes data from source
+        template = get_predefined_template('table_actuals_select_delta.sql' if self.transfer_delta else 'table_actuals_select_all.sql')
         return template.render(source_table=full_name)
 
     def execute(self, context: Context):
@@ -536,6 +553,7 @@ class ActualsTableTransfer(TableTransfer):
                 if data is None or data.empty:
                     self.log.info('No data to transfer')
                     return
+                self.log.info(f'{len(data)} records to be transferred (chunk size is {self.chunk_size})')
                 
                 data = self._adjust_dtypes(data, self.dest_table_def)
                 if self.session:
@@ -543,8 +561,9 @@ class ActualsTableTransfer(TableTransfer):
                     col_map['session_id'] = 'session_id'
 
                 # Temp table has to be created 1st, otherwise it might be column types mismatch
-                temp_sqla_table = SqlaTable(temp_table.name, temp_table.sqlalchemy_metadata, *([c.copy() for c in self.source.columns]))
+                temp_sqla_table = SqlaTable(temp_table.name, temp_table.sqlalchemy_metadata, *([c.copy() for c in self.source_table_def.columns]))
                 self.destination.sqlalchemy_metadata.create_all(bind=dest_conn, tables=[temp_sqla_table], checkfirst=False)
+                self.log.info(f'{temp_table.name} temporary table created')
 
                 try:
                     # Save data to temporary table
@@ -557,10 +576,12 @@ class ActualsTableTransfer(TableTransfer):
                         chunksize=self.chunk_size,
                         index=False,
                     )
+                    self.log.info(f'Source data transferred to {temp_table.name}')
 
                     with dest_conn.begin():
                         # If `replace_data` is set, purge target table
                         if self.replace_data:
+                            self.log.info(f'Cleaning up destination table {self.destination_table}')
                             dest_conn.execute(text(f'delete from {self.destination_table}'))
 
                         # Merge temporary and target tables
@@ -1074,6 +1095,7 @@ def transfer_actuals_table(
         source_conn_id: str | None = None,
         destination_conn_id: str | None = None,
         session: XComArg | ETLSession = None,
+        transfer_delta: bool = True,
         as_ods: bool = False,
         keep_temp_table: bool = False,
         replace_data: bool = False,
@@ -1086,6 +1108,8 @@ def transfer_actuals_table(
 
     """
     assert session is not None, 'Transfer to actuals requires ETL session'
+
+    kwargs['transfer_delta'] = transfer_delta
     kwargs['as_ods'] = as_ods
     kwargs['keep_temp_table'] = keep_temp_table
     kwargs['replace_data'] = replace_data
@@ -1107,6 +1131,7 @@ def transfer_actuals_tables(
         group_id: str | None = None,
         num_parallel: int = 1,
         session: XComArg | ETLSession | None = None,
+        transfer_delta: bool = True,
         as_ods: bool = False,
         keep_temp_table: bool = False,
         replace_data: bool = False,
@@ -1115,6 +1140,8 @@ def transfer_actuals_tables(
     """ Transfer multiple tables from stage to actuals.
     """
     assert session is not None, 'Transfer to actuals requires ETL session'
+
+    kwargs['transfer_delta'] = transfer_delta
     kwargs['as_ods'] = as_ods
     kwargs['keep_temp_table'] = keep_temp_table
     kwargs['replace_data'] = replace_data
