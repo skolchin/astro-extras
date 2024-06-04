@@ -14,8 +14,11 @@ x-airflow-common:
   &airflow-common
   env_file: .env
   build:
-    context: .
     dockerfile: ./Dockerfile
+    context: .
+    args:
+      AIRFLOW_UID: ${AIRFLOW_UID:-50000}
+      REG_PROXY: ${REG_PROXY:-}
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -47,11 +50,13 @@ x-airflow-common:
 services:
   postgres:
     image: postgres:latest
+    env_file: .env
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-airflow}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
       TZ: ${POSTGRES_TIMEZONE:-UTC}
       PGTZ: ${POSTGRES_TIMEZONE:-UTC}
+      REG_PROXY: ${REG_PROXY:-}
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
       - ./docker/setup_db.sql:/docker-entrypoint-initdb.d/10_setup_db.sql
