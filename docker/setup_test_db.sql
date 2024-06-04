@@ -6,6 +6,7 @@ create database source_db;
 create database target_db;
 create database actuals_db;
 
+
 \c airflow
 
 create table public."connection" (
@@ -28,6 +29,7 @@ values
 	 ('target_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
      ('actuals_db','postgres','','postgres','actuals_db','postgres','918ja620_82',5432,false,false,''),
 	 ('source_db','postgres','','postgres','source_db','postgres','918ja620_82',5432,false,false,'');
+
 
 \c source_db
 
@@ -100,6 +102,7 @@ create table public.test_table_8(
     test2 int not null,
     test3 float not null,
     test4 bool not null,
+    created_ts timestamp not null default current_timestamp,
     mod_ts timestamp default current_timestamp
 );
 
@@ -147,6 +150,7 @@ from generate_series(1, 100) i;
 insert into public.test_table_9(test1, test2, test3, test4)
 select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
 from generate_series(1, 100) i;
+
 
 \c target_db
 
@@ -237,6 +241,7 @@ create table public.test_table_8(
     test2 int not null,
     test3 float not null,
     test4 bool not null,
+    created_ts timestamp,
     mod_ts timestamp
 );
 
@@ -269,27 +274,20 @@ with d as (
     order by r.id, r.session_id desc)
 select t.* from public.test_table_7 t inner join d on t.id = d.id and t.session_id = d.session_id and d._deleted is null;
 
+
 \c actuals_db
 
 create schema actuals;
 comment on schema actuals is 'Actuals area';
 
-create table actuals.types(
-    type_id int not null primary key,
-    session_id int not null,
-    type_name text not null
-);
-comment on table actuals.types is 'Actuals types table';
-
 create table actuals.test_table_8(
     id int not null primary key,
     session_id int not null,
-    type_id int not null references actuals.types(type_id),
     test1 text not null,
     test2 int not null,
     test3 float not null,
     test4 bool not null,
-    created_ts timestamp not null default current_timestamp,
+    created_ts timestamp,
     mod_ts timestamp
 );
 comment on table actuals.test_table_8 is 'Actuals data table';
@@ -299,12 +297,11 @@ create table actuals.test_table_9(
     session_id int not null,
     _modified timestamp,
     _deleted timestamp,
-    type_id int not null references actuals.types(type_id),
     test1 text not null,
     test2 int not null,
     test3 float not null,
     test4 bool not null,
-    created_ts timestamp not null default current_timestamp,
+    created_ts timestamp,
     mod_ts timestamp not null
 );
 comment on table actuals.test_table_9 is 'Actuals ODS data table';

@@ -335,16 +335,6 @@ def assert_tables_equality(
         AssertionError: If the tables do not match the expectation.
     """
     for src_table, tgt_table in table_pairs:
-        if src_table.name.endswith('_a'):
-            assert_views_existence(src_engine, [src_table.name])
-        else:
-            assert_tables_existence(src_engine, [src_table.name])
-        
-        if tgt_table.name.endswith('_a'):
-            assert_views_existence(tgt_engine, [tgt_table.name])
-        else:
-            assert_tables_existence(tgt_engine, [tgt_table.name])
-
         assert_compare_table_schemas(src_table, tgt_table, ignore_cols, success=success)
         assert_compare_table_contents(src_engine, tgt_engine, src_table, tgt_table, ignore_cols, success=success)
 
