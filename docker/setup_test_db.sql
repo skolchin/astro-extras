@@ -102,11 +102,20 @@ create table public.test_table_8(
     test2 int not null,
     test3 float not null,
     test4 bool not null,
-    created_ts timestamp not null default current_timestamp,
     mod_ts timestamp default current_timestamp
 );
 
 create table public.test_table_9(
+    id serial not null primary key,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    created_ts timestamp not null default current_timestamp,
+    mod_ts timestamp default current_timestamp
+);
+
+create table public.test_table_10(
     id serial not null primary key,
     test1 text not null,
     test2 int not null,
@@ -148,6 +157,10 @@ select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
 from generate_series(1, 100) i;
 
 insert into public.test_table_9(test1, test2, test3, test4)
+select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
+from generate_series(1, 100) i;
+
+insert into public.test_table_10(test1, test2, test3, test4)
 select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
 from generate_series(1, 100) i;
 
@@ -224,8 +237,6 @@ create table public.test_table_6(
 
 create table public.test_table_7(
     session_id int not null references public.sessions(session_id),
-    _modified timestamptz,
-    _deleted timestamptz,
     id int not null,
     test1 text not null,
     test2 int not null,
@@ -236,6 +247,18 @@ create table public.test_table_7(
 
 create table public.test_table_8(
     session_id int not null references public.sessions(session_id),
+    _modified timestamptz,
+    _deleted timestamptz,
+    id int not null,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    mod_ts timestamp
+);
+
+create table public.test_table_9(
+    session_id int not null references public.sessions(session_id),
     id int not null primary key,
     test1 text not null,
     test2 int not null,
@@ -245,7 +268,7 @@ create table public.test_table_8(
     mod_ts timestamp
 );
 
-create table public.test_table_9(
+create table public.test_table_10(
     session_id int not null references public.sessions(session_id),
     _modified timestamptz,
     _deleted timestamptz,
@@ -267,12 +290,22 @@ AS SELECT
              JOIN sessions s ON s.session_id = t.session_id AND s.status::text = 'success'::text
           GROUP BY t.id));
 
-create or replace view public.test_table_7_a as
+CREATE OR REPLACE VIEW public.test_table_7_a
+AS SELECT 
+    *
+   FROM public.test_table_7 d
+  WHERE ((id, session_id) IN (SELECT t.id,
+            max(t.session_id) AS session_id
+           FROM public.test_table_7 t
+             JOIN sessions s ON s.session_id = t.session_id AND s.status::text = 'success'::text
+          GROUP BY t.id));
+
+create or replace view public.test_table_8_a as
 with d as (
     select distinct on (r.id) r.id, r.session_id, r._deleted from public.sessions s
-    inner join public.test_table_7 r on r.session_id = s.session_id and s.status = 'success'
+    inner join public.test_table_8 r on r.session_id = s.session_id and s.status = 'success'
     order by r.id, r.session_id desc)
-select t.* from public.test_table_7 t inner join d on t.id = d.id and t.session_id = d.session_id and d._deleted is null;
+select t.* from public.test_table_8 t inner join d on t.id = d.id and t.session_id = d.session_id and d._deleted is null;
 
 
 \c actuals_db
@@ -280,7 +313,7 @@ select t.* from public.test_table_7 t inner join d on t.id = d.id and t.session_
 create schema actuals;
 comment on schema actuals is 'Actuals area';
 
-create table actuals.test_table_8(
+create table actuals.test_table_9(
     id int not null primary key,
     session_id int not null,
     test1 text not null,
@@ -290,9 +323,9 @@ create table actuals.test_table_8(
     created_ts timestamp,
     mod_ts timestamp
 );
-comment on table actuals.test_table_8 is 'Actuals data table';
+comment on table actuals.test_table_9 is 'Actuals data table';
 
-create table actuals.test_table_9(
+create table actuals.test_table_10(
     id int not null primary key,
     session_id int not null,
     _modified timestamp,
@@ -304,7 +337,7 @@ create table actuals.test_table_9(
     created_ts timestamp,
     mod_ts timestamp not null
 );
-comment on table actuals.test_table_9 is 'Actuals ODS data table';
+comment on table actuals.test_table_10 is 'Actuals ODS data table';
 
-create view actuals.ods_data_a as select * from actuals.test_table_9 where "_deleted" is null order by id;
+create view actuals.ods_data_a as select * from actuals.test_table_10 where "_deleted" is null order by id;
 comment on view actuals.ods_data_a is 'Actual data view for Actuals ODS data table';
