@@ -9,7 +9,11 @@ from datetime import datetime, timedelta
 from sqlalchemy import Table
 from confsupport import logger
 
-from utils import update_mod_ts_tables, get_table_row_count, create_tables_tuple
+from utils import (
+    update_mod_ts_tables,
+    get_table_row_count,
+    create_tables_tuple
+)
 
 from asserts import (
     assert_dag_run,
@@ -27,7 +31,7 @@ from asserts import (
 # Table attributes that will be ignored during tests
 IGNORE_ATTR = set(['session_id', '_deleted', '_modified'])
 # IDs of records that will be modified for testing
-MOD_IDS = [1, 2, 3]
+MOD_IDS = {1, 2, 3}
 # Get the current date and time
 DT_NOW = datetime.now()
 # Calculate the date 10 days before today
@@ -226,11 +230,20 @@ def test_transfer_tables_session(
     assert_tables_existence(target_db, tables_name)
     
     # Create SQLAlchemy Table objects (source and target)
-    source_tables = create_tables_tuple(source_db, tables_name, src_metadata)
-    target_tables = create_tables_tuple(target_db, tables_name, tgt_metadata)
+    test_table_4_source, test_table_5_source, test_table_6_source = create_tables_tuple(
+        source_db,
+        tables_name,
+        src_metadata
+    )
     
-    test_table_4_source, test_table_5_source, test_table_6_source = source_tables
-    test_table_4_target, test_table_5_target, test_table_6_target = target_tables
+    test_table_4_target, test_table_5_target, test_table_6_target = create_tables_tuple(
+        target_db,
+        tables_name,
+        tgt_metadata
+    )
+
+    assert_views_existence(target_db, [f"{test_table_4_target.name}_a"])
+    test_table_4_actuals = Table(f"{test_table_4_target.name}_a", tgt_metadata, autoload_with=target_db)
     
     for table in tables_name:
         assert_table_columns_existence(target_db, table, ['session_id'])
@@ -245,25 +258,13 @@ def test_transfer_tables_session(
     )
 
     # Assert that the data in 'test_table_4' and 'test_table_6' in the source and target databases are equal
-    assert_tables_equality(
-        source_db,
-        target_db,
-        [(test_table_4_source, test_table_4_target),
-         (test_table_6_source, test_table_6_target)],
-        ignore_cols=IGNORE_ATTR
-    )
-    
-    # Check the existence of the views in the target database
-    assert_views_existence(target_db, [f"{test_table_4_target.name}_a"])
-    
-    # Create actuals view table object for 'test_table_4'
-    test_table_4_actuals = Table(f"{test_table_4_target.name}_a", tgt_metadata, autoload_with=target_db)
-
     # Assert that the data in 'test_table_4' using the actuals view is equal
     assert_tables_equality(
         source_db,
         target_db,
-        [(test_table_4_source, test_table_4_actuals)],
+        [(test_table_4_source, test_table_4_target),
+         (test_table_6_source, test_table_6_target),
+         (test_table_4_source, test_table_4_actuals)],
         ignore_cols=IGNORE_ATTR
     )
     
@@ -410,8 +411,8 @@ def test_transfer_changed_tables(
         airflow_credentials
     )
 
-    # Assert that the data in 'test_table_7' in the source and target databases are equal using the actuals view
-    assert_tables_equality(
+    # Assert that the data in 'test_table_7' using the actuals view is equal after updates
+    assert_compare_tables_contents(
         source_db,
         target_db,
         [(test_table_7_source, test_table_7_actuals)],
