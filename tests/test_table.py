@@ -159,23 +159,23 @@ def test_transfer_tables(
         tables_name,
         src_metadata
     )
-    
+
     # Create SQLAlchemy Table objects (target)
     test_table_1_target, test_table_2_target, test_table_3_target = create_tables_tuple(
         target_db,
         tables_name,
         tgt_metadata
     )
-    
+
     # Verify the successful execution of the DAG
     assert_dag_run('test-transfer-tables', docker_ip, docker_services, airflow_credentials)
 
     # Compare table schemas between the source and target databases
     assert_compare_table_schemas(test_table_2_source, test_table_2_target)
-    
+
     # Verify the row count in the target table
     assert_table_row_count(target_db, test_table_2_target, 11)
-    
+
     # Compare data in tables between the source and target databases, ignoring certain columns
     assert_tables_equality(
         source_db,
