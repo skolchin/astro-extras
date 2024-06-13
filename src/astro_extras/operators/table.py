@@ -513,8 +513,8 @@ class ActualsTableTransfer(TableTransfer):
             raise AirflowFailException(f'Could not detect primary key on {self.destination_table}')
 
         # Replace `t.id` with ids and `t.*` with selection columns list and proper session_id
-        id_cols_str = ", ".join(id_cols)
-        all_cols_str = f'{self.session.session_id} as session_id, ' + ", ".join([col for col in col_map if col != 'session_id'])
+        id_cols_str = ", ".join([f't.{c}' for c in id_cols])
+        all_cols_str = f'{self.session.session_id} as session_id, ' + ", ".join([f't.{c}' for c in col_map if c != 'session_id'])
         sql = self.sql.replace('t.id', id_cols_str).replace('t.*', all_cols_str)
         self.log.info(f'Source extraction SQL:\n{sql}')
 
