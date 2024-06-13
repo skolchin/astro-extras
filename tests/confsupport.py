@@ -14,6 +14,7 @@ from requests.exceptions import ConnectionError
 
 logger = logging.getLogger(__name__)
 
+
 def is_responsive(url):
     """ Checks whethet given URL responds with OK """
     try:
@@ -22,7 +23,8 @@ def is_responsive(url):
             return True
     except ConnectionError:
         return False
-    
+
+
 def airflow_query(method, query, data, docker_ip, docker_services, airflow_credentials):
     """ Runs the query against Airflow webserver (getting status, starting DAG etc)"""
 
@@ -37,6 +39,7 @@ def airflow_query(method, query, data, docker_ip, docker_services, airflow_crede
     response = fun(url, headers=headers, data=data, auth=airflow_credentials)
     response.raise_for_status()
     return response.json()
+
 
 def run_dag(dag_id, docker_ip, docker_services, airflow_credentials, params=None, timeout=30):
     """ Start Airflow DAG """
@@ -74,12 +77,14 @@ def run_dag(dag_id, docker_ip, docker_services, airflow_credentials, params=None
     logger.info(f"DAG {dag_id} run {dag_run_id} finished in '{state}' state")
     return state
 
+
 def get_db_engine(database, db_credentials, docker_ip, docker_services):
     """ Makes an SQLA db engine instance connected to given database """
     uname, psw = db_credentials
     port = docker_services.port_for("postgres", 5432)
     url = f"postgresql://{uname}:{psw}@{docker_ip}:{port}/{database}"
     return create_engine(url)
+
 
 def init_database(db_engine, init_path):
     """ Initializes database by running all SQL scripts in given directory """
@@ -93,6 +98,7 @@ def init_database(db_engine, init_path):
             with open(fn, 'rt') as fp:
                 sql = fp.read()
                 conn.execute(sql)
+
 
 def _get_airflow_log_files(dag_id, run_id, root_dir):
     clear = lambda s: re.sub(r'\W', '', s)
@@ -109,12 +115,14 @@ def _get_airflow_log_files(dag_id, run_id, root_dir):
                 if os.path.split(task_dir)[-1].startswith('task_id='):
                     yield short_task_dir.split('=')[1], [os.path.join(task_dir, f) for f in log_files]
 
+
 def _read_airflow_log_files(dag_id, run_id, root_dir):
     for task_id, log_files in _get_airflow_log_files(dag_id, run_id, root_dir):
         for log_file in log_files:
             with open(log_file, 'rt') as fp:
                 for line in fp.readlines():
                     yield task_id, line
+
 
 def get_airflow_log(dag_id, run_id, root_dir):
     log_msg = {}
@@ -136,6 +144,7 @@ def get_airflow_log(dag_id, run_id, root_dir):
 
     yield log_msg
 
+
 def get_airflow_log_exceptions(dag_id, run_id, root_dir):
     errors = []
     for log_msg in get_airflow_log(dag_id, run_id, root_dir):
@@ -145,3 +154,12 @@ def get_airflow_log_exceptions(dag_id, run_id, root_dir):
                 errors.append(msg)
     return errors
 
+
+def setup_db(conn_id, db_credentials, docker_ip, docker_services, pytestconfig):
+    """Helper function to setup a database connection as SQLA engine"""
+    dir = pytestconfig.invocation_params.dir / f'init_{conn_id}'
+    logger.info(f'Initializing {conn_id} database using scripts from {dir} directory')
+
+    engine = get_db_engine(conn_id, db_credentials, docker_ip, docker_services)
+    init_database(engine, dir)
+    return engine

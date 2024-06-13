@@ -99,13 +99,13 @@ with DAG(
     """ Test for `transfer_changed_table()` function.
 
         Assuming that initial transfer has already been performed, 
-        modifies data in `test_table_4` table and trigger the transfer. 
+        modifies data in `test_table_7` table and trigger the transfer. 
         Table is transferred in dictionary mode (copied as a whole upon data change), 
         change timestamps are ignored.
     """
     
-    input_table = Table('test_table_4', conn_id='source_db', metadata=Metadata(schema='public'))
-    output_table = Table('test_table_4', conn_id='target_db', metadata=Metadata(schema='public'))
+    input_table = Table('test_table_7', conn_id='source_db', metadata=Metadata(schema='public'))
+    output_table = Table('test_table_7', conn_id='target_db', metadata=Metadata(schema='public'))
 
     # @aql.run_raw_sql
     # def modify_data(table: Table):
@@ -126,7 +126,7 @@ with DAG(
     schedule=None,
     catchup=False,
 ) as dag, ETLSession('source_db', 'target_db') as session:
-    transfer_ods_table('test_table_7', 'test_table_7', 'source_db', 'target_db', session=session)
+    transfer_ods_table('test_table_8', 'test_table_8', 'source_db', 'target_db', session=session)
 
 
 with DAG(
@@ -136,8 +136,8 @@ with DAG(
     catchup=False,
 ) as dag, ETLSession('source_db', 'target_db') as session:
     
-    input_table = Table('test_table_7', conn_id='source_db', metadata=Metadata(schema='public'))
-    output_table = Table('test_table_7', conn_id='target_db', metadata=Metadata(schema='public'))
+    input_table = Table('test_table_8', conn_id='source_db', metadata=Metadata(schema='public'))
+    output_table = Table('test_table_8', conn_id='target_db', metadata=Metadata(schema='public'))
 
     @aql.run_raw_sql
     def modify_data(table: Table):
@@ -158,62 +158,3 @@ with DAG(
     modify_data(input_table) >> \
     remove_data(input_table) >> \
     transfer_ods_table(input_table, output_table, 'source_db', 'target_db', session=session)
-
-
-with DAG(
-    dag_id='test-transfer-tables-for-actuals-data',
-    start_date=pendulum.today().add(days=-1),
-    schedule=None,
-    catchup=False
-) as dag, ETLSession('source_db', 'target_db') as session:
-    """ Test for transfer_actuals_table() / transfer_actuals_tables() functions.
-    """
-    transfer_table('test_table_8', 'test_table_8', 'source_db', 'target_db', session=session)
-
-
-with DAG(
-    dag_id='test-transfer-tables-actuals',
-    start_date=pendulum.today().add(days=-1),
-    schedule=None,
-    catchup=False
-) as dag, ETLSession('target_db', 'target_db') as session:
-    """ Test for transfer_actuals_table() / transfer_actuals_tables() functions.
-    """    
-    input_table = Table('test_table_8', conn_id='target_db', metadata=Metadata(schema='public'))
-    output_table = Table('test_table_8', conn_id='target_db', metadata=Metadata(schema='actuals'))
-    transfer_actuals_table(input_table, output_table, 'target_db', 'target_db', session=session)
-
-
-# ===========================================
-
-# ================ FUTURE ===================
-
-# ===========================================
-
-
-# with DAG(
-#     dag_id='test-transfer-tables-for-ods-actuals-data',
-#     start_date=pendulum.today().add(days=-1),
-#     schedule=None,
-#     catchup=False
-# ) as dag, ETLSession('source_db', 'target_db') as session:
-#     """ Test for transfer_actuals_table() / transfer_actuals_tables() functions.
-#     """
-#     input_table = Table('test_table_9', conn_id='source_db', metadata=Metadata(schema='public'))
-#     output_table = Table('test_table_9', conn_id='target_db', metadata=Metadata(schema='public'))
-#     transfer_ods_table(input_table, output_table, 'source_db', 'target_db', session=session)
-
-
-# with DAG(
-#     dag_id='test-transfer-tables-ods-actuals',
-#     start_date=pendulum.today().add(days=-1),
-#     schedule=None,
-#     catchup=False
-# ) as dag, ETLSession('target_db', 'target_db') as session:
-#     """ Test for transfer_table() / transfer_tables() functions.
-#     """
-#     input_table = Table('test_table_9', conn_id='target_db', metadata=Metadata(schema='public'))
-#     output_table = Table('test_table_9', conn_id='target_db', metadata=Metadata(schema='actuals'))
-#     transfer_actuals_table(input_table, output_table, 'target_db', 'target_db', session=session, as_ods=True)
-    
-# params={"period": "[2024-05-10, 2024-05-21]"}

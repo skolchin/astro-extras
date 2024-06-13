@@ -4,6 +4,8 @@
 create database airflow;
 create database source_db;
 create database target_db;
+create database actuals_db;
+
 
 \c airflow
 
@@ -25,7 +27,9 @@ create table public."connection" (
 insert into public."connection" (conn_id,conn_type,description,host,"schema",login,"password",port,is_encrypted,is_extra_encrypted,extra) 
 values
 	 ('target_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
+     ('actuals_db','postgres','','postgres','actuals_db','postgres','918ja620_82',5432,false,false,''),
 	 ('source_db','postgres','','postgres','source_db','postgres','918ja620_82',5432,false,false,'');
+
 
 \c source_db
 
@@ -107,6 +111,16 @@ create table public.test_table_9(
     test2 int not null,
     test3 float not null,
     test4 bool not null,
+    created_ts timestamp not null default current_timestamp,
+    mod_ts timestamp default current_timestamp
+);
+
+create table public.test_table_10(
+    id serial not null primary key,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
     mod_ts timestamp default current_timestamp
 );
 
@@ -146,9 +160,12 @@ insert into public.test_table_9(test1, test2, test3, test4)
 select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
 from generate_series(1, 100) i;
 
-\c target_db
+insert into public.test_table_10(test1, test2, test3, test4)
+select md5(random()::text), (random()*32767)::int, random(), random()>=0.5
+from generate_series(1, 100) i;
 
-CREATE SCHEMA IF NOT EXISTS actuals;
+
+\c target_db
 
 create table public.sessions(
     session_id serial not null primary key,
@@ -220,8 +237,6 @@ create table public.test_table_6(
 
 create table public.test_table_7(
     session_id int not null references public.sessions(session_id),
-    _modified timestamptz,
-    _deleted timestamptz,
     id int not null,
     test1 text not null,
     test2 int not null,
@@ -232,7 +247,9 @@ create table public.test_table_7(
 
 create table public.test_table_8(
     session_id int not null references public.sessions(session_id),
-    id int not null primary key,
+    _modified timestamptz,
+    _deleted timestamptz,
+    id int not null,
     test1 text not null,
     test2 int not null,
     test3 float not null,
@@ -242,27 +259,16 @@ create table public.test_table_8(
 
 create table public.test_table_9(
     session_id int not null references public.sessions(session_id),
-    _modified timestamptz,
-    _deleted timestamptz,
-    id int not null,
-    test1 text not null,
-    test2 int not null,
-    test3 float not null,
-    test4 bool not null,
-    mod_ts timestamp not null
-);
-
-create table actuals.test_table_8(
-    session_id int not null references public.sessions(session_id),
     id int not null primary key,
     test1 text not null,
     test2 int not null,
     test3 float not null,
     test4 bool not null,
+    created_ts timestamp,
     mod_ts timestamp
 );
 
-create table actuals.test_table_9(
+create table public.test_table_10(
     session_id int not null references public.sessions(session_id),
     _modified timestamptz,
     _deleted timestamptz,
@@ -284,9 +290,54 @@ AS SELECT
              JOIN sessions s ON s.session_id = t.session_id AND s.status::text = 'success'::text
           GROUP BY t.id));
 
-create or replace view public.test_table_7_a as
+CREATE OR REPLACE VIEW public.test_table_7_a
+AS SELECT 
+    *
+   FROM public.test_table_7 d
+  WHERE ((id, session_id) IN (SELECT t.id,
+            max(t.session_id) AS session_id
+           FROM public.test_table_7 t
+             JOIN sessions s ON s.session_id = t.session_id AND s.status::text = 'success'::text
+          GROUP BY t.id));
+
+create or replace view public.test_table_8_a as
 with d as (
     select distinct on (r.id) r.id, r.session_id, r._deleted from public.sessions s
-    inner join public.test_table_7 r on r.session_id = s.session_id and s.status = 'success'
+    inner join public.test_table_8 r on r.session_id = s.session_id and s.status = 'success'
     order by r.id, r.session_id desc)
-select t.* from public.test_table_7 t inner join d on t.id = d.id and t.session_id = d.session_id and d._deleted is null;
+select t.* from public.test_table_8 t inner join d on t.id = d.id and t.session_id = d.session_id and d._deleted is null;
+
+
+\c actuals_db
+
+create schema actuals;
+comment on schema actuals is 'Actuals area';
+
+create table actuals.test_table_9(
+    id int not null primary key,
+    session_id int not null,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    created_ts timestamp,
+    mod_ts timestamp
+);
+comment on table actuals.test_table_9 is 'Actuals data table';
+
+create table actuals.test_table_10(
+    id int not null primary key,
+    session_id int not null,
+    _modified timestamp,
+    _deleted timestamp,
+    test1 text not null,
+    test2 int not null,
+    test3 float not null,
+    test4 bool not null,
+    created_ts timestamp,
+    mod_ts timestamp not null
+);
+comment on table actuals.test_table_10 is 'Actuals ODS data table';
+
+create view actuals.ods_data_a as select * from actuals.test_table_10 where "_deleted" is null order by id;
+comment on view actuals.ods_data_a is 'Actual data view for Actuals ODS data table';

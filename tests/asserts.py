@@ -29,17 +29,17 @@ def assert_dag_run(
 
     Args:
     -----
-        dag_id (str): ID of the DAG to run.
-        docker_ip (str | Any): IP address of the Docker host.
-        docker_services (Any): Docker services for managing containers.
-        airflow_credentials (tuple): Credentials for Airflow in the form (username, password).
-        params (str, optional): Parameters to pass to the DAG run.
-        timeout (int, optional): Timeout for the DAG run.
-        success (bool, optional): Flag to indicate the expected state of the DAG run. Defaults to True.
+        `dag_id` (str): ID of the DAG to run.
+        `docker_ip` (str | Any): IP address of the Docker host.
+        `docker_services` (Any): Docker services for managing containers.
+        `airflow_credentials` (tuple): Credentials for Airflow in the form (username, password).
+        `params` (str, optional): Parameters to pass to the DAG run.
+        `timeout` (int, optional): Timeout for the DAG run.
+        `success` (bool, optional): Flag to indicate the expected state of the DAG run. Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
     """
     expected_state = 'success' if success else 'failed'
     actual_state = run_dag(dag_id, docker_ip, docker_services, airflow_credentials, params, timeout)
@@ -57,18 +57,18 @@ def assert_table_row_count(
 
     Args:
     -----
-        engine (Engine): SQLAlchemy engine to use for the query.
-        table (Table): SQLAlchemy Table object.
-        count (int): The row count to match or mismatch.
-        success (bool, optional): Flag to indicate whether to match (True) or mismatch (False) the row count. Defaults to True.
+        `engine` (Engine): SQLAlchemy engine to use for the query.
+        `table` (Table): SQLAlchemy Table object.
+        `count` (int): The row count to match or mismatch.
+        `success` (bool, optional): Flag to indicate whether to match (True) or mismatch (False) the row count. Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the row count does not match the expectation.
+        `AssertionError`: If the row count does not match the expectation.
     """
     actual_count = get_table_row_count(engine, table)
     if success:
@@ -82,7 +82,7 @@ def assert_compare_table_contents(
         tgt_engine: Engine,
         src_table: Table,
         tgt_table: Table,
-        ignore_cols: set = None,
+        ignore_cols: Set[str] = None,
         success: bool = True
     ) -> None:
     """
@@ -90,20 +90,20 @@ def assert_compare_table_contents(
 
     Args:
     -----
-        src_engine (Engine): SQLAlchemy engine for the source database.
-        tgt_engine (Engine): SQLAlchemy engine for the target database.
-        src_table (Table): SQLAlchemy Table object for the source table.
-        tgt_table (Table): SQLAlchemy Table object for the target table.
-        ignore_cols (set, optional): Set of column names to ignore in the comparison.
-        success (bool, optional): Flag to indicate whether to match (True) or mismatch (False) the table contents. Defaults to True.
+        `src_engine` (Engine): SQLAlchemy engine for the source database.
+        `tgt_engine` (Engine): SQLAlchemy engine for the target database.
+        `src_table` (Table): SQLAlchemy Table object for the source table.
+        `tgt_table` (Table): SQLAlchemy Table object for the target table.
+        `ignore_cols` (Set[str], optional): Set of column names to ignore in the comparison.
+        `success` (bool, optional): Flag to indicate whether to match (True) or mismatch (False) the table contents. Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the table contents do not match the expectation.
+        `AssertionError`: If the table contents do not match the expectation.
     """
     src_data = get_table_data(src_engine, src_table, ignore_cols)
     tgt_data = get_table_data(tgt_engine, tgt_table, ignore_cols)
@@ -130,19 +130,19 @@ def assert_compare_tables_contents(
 
     Args:
     -----
-        src_engine (Engine): Source database engine.
-        tgt_engine (Engine): Target database engine.
-        table_pairs (List[Tuple[Table, Table]]): List of tuples containing source and target SQLAlchemy Table objects.
-        ignore_cols (Set[str], optional): Set of column names to ignore. Defaults to None.
-        success (bool, optional): Flag to indicate whether to match (True) or mismatch (False) the table contents. Defaults to True.
+        `src_engine` (Engine): Source database engine.
+        `tgt_engine` (Engine): Target database engine.
+        `table_pairs` (List[Tuple[Table, Table]]): List of tuples containing source and target SQLAlchemy Table objects.
+        `ignore_cols` (Set[str], optional): Set of column names to ignore. Defaults to None.
+        `success` (bool, optional): Flag to indicate whether to match (True) or mismatch (False) the table contents. Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the table contents do not match the expectation.
+        `AssertionError`: If the table contents do not match the expectation.
     """
     for src_table, tgt_table in table_pairs:
         src_data = get_table_data(src_engine, src_table, ignore_cols)
@@ -157,7 +157,7 @@ def assert_compare_tables_contents(
 def assert_compare_table_schemas(
         src_table: Table,
         tgt_table: Table,
-        ignore_cols: set = None,
+        ignore_cols: Set[str] = None,
         success: bool = True
     ) -> None:
     """
@@ -168,18 +168,18 @@ def assert_compare_table_schemas(
 
     Args:
     -----
-        src_table (Table): SQLAlchemy Table object for the source table.
-        tgt_table (Table): SQLAlchemy Table object for the target table.
-        ignore_cols (set, optional): Set of column names to ignore. Defaults to None.
-        success (bool, optional): Flag to indicate whether to match (True) or mismatch (False) the table schemas. Defaults to True.
+        `src_table` (Table): SQLAlchemy Table object for the source table.
+        `tgt_table` (Table): SQLAlchemy Table object for the target table.
+        `ignore_cols` (Set[str], optional): Set of column names to ignore. Defaults to None.
+        `success` (bool, optional): Flag to indicate whether to match (True) or mismatch (False) the table schemas. Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the table schemas do not match the expectation.
+        `AssertionError`: If the table schemas do not match the expectation.
     """
     ignore_cols = ignore_cols if ignore_cols else set()
 
@@ -190,16 +190,16 @@ def assert_compare_table_schemas(
     tgt_indexes = sorted(index.name for index in inspect(tgt_table).indexes)
 
     if success:
-        assert src_columns == tgt_columns, f"Columns do not match. Source columns: {src_columns}. Destination columns: {tgt_columns}."
-        assert src_indexes == tgt_indexes, f"Indexes do not match. Source indexes: {src_indexes}. Destination indexes: {tgt_indexes}."
+        assert src_columns == tgt_columns, f"Columns do not match. Source columns: {src_columns}. Target columns: {tgt_columns}."
+        assert src_indexes == tgt_indexes, f"Indexes do not match. Source indexes: {src_indexes}. Target indexes: {tgt_indexes}."
     else:
-        assert src_columns != tgt_columns, f"Columns should not match. Source columns: {src_columns}. Destination columns: {tgt_columns}."
-        assert src_indexes != tgt_indexes, f"Indexes should not match. Source indexes: {src_indexes}. Destination indexes: {tgt_indexes}."
+        assert src_columns != tgt_columns, f"Columns should not match. Source columns: {src_columns}. Target columns: {tgt_columns}."
+        assert src_indexes != tgt_indexes, f"Indexes should not match. Source indexes: {src_indexes}. Target indexes: {tgt_indexes}."
 
 
 def assert_tables_existence(
         engine: Engine,
-        tables: List[str],
+        tables: Set[str],
         schema: str = 'public',
         success: bool = True
     ) -> None:
@@ -211,18 +211,18 @@ def assert_tables_existence(
 
     Args:
     -----
-        engine (Engine): SQLAlchemy engine to use for the query.
-        tables (List[str]): List of table names to check.
-        schema (str, optional): Schema in which to check for table existence. Defaults to 'public'.
-        success (bool, optional): Flag to indicate whether to check for existence (True) or non-existence (False) of the tables. Defaults to True.
+        `engine` (Engine): SQLAlchemy engine to use for the query.
+        `tables` (Set[str]): Set of table names to check.
+        `schema` (str, optional): Schema in which to check for table existence. Defaults to 'public'.
+        `success` (bool, optional): Flag to indicate whether to check for existence (True) or non-existence (False) of the tables. Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the tables do not match the expectation.
+        `AssertionError`: If the tables do not match the expectation.
     """
     db_tables = inspect(engine).get_table_names(schema=schema)
     for table in tables:
@@ -234,7 +234,7 @@ def assert_tables_existence(
 
 def assert_views_existence(
         engine: Engine,
-        views: List[str],
+        views: Set[str],
         schema: str = 'public',
         success: bool = True
     ) -> None:
@@ -246,18 +246,18 @@ def assert_views_existence(
 
     Args:
     -----
-        engine (Engine): SQLAlchemy engine to use for the query.
-        views (List[str]): List of view names to check.
-        schema (str, optional): Schema in which to check for view existence. Defaults to 'public'.
-        success (bool, optional): Flag to indicate whether to check for existence (True) or non-existence (False) of the views. Defaults to True.
+        `engine` (Engine): SQLAlchemy engine to use for the query.
+        `views` (Set[str]): Set of view names to check.
+        `schema` (str, optional): Schema in which to check for view existence. Defaults to 'public'.
+        `success` (bool, optional): Flag to indicate whether to check for existence (True) or non-existence (False) of the views. Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the views do not match the expectation.
+        `AssertionError`: If the views do not match the expectation.
     """
     db_views = inspect(engine).get_view_names(schema=schema)
     for view in views:
@@ -270,7 +270,7 @@ def assert_views_existence(
 def assert_table_columns_existence(
         engine: Engine,
         table_name: str,
-        columns: List[str],
+        columns: Set[str],
         schema: str = 'public',
         success: bool = True
     ) -> None:
@@ -282,19 +282,19 @@ def assert_table_columns_existence(
 
     Args:
     -----
-        engine (Engine): SQLAlchemy engine to use for the query.
-        table_name (str): Name of the table to check.
-        columns (List[str]): List of column names to check.
-        schema (str, optional): Schema in which the table is located. Defaults to 'public'.
-        success (bool, optional): Flag to indicate whether to check for existence (True) or non-existence (False) of the columns. Defaults to True.
+        `engine` (Engine): SQLAlchemy engine to use for the query.
+        `table_name` (str): Name of the table to check.
+        `columns` (Set[str]): Set of column names to check.
+        `schema` (str, optional): Schema in which the table is located. Defaults to 'public'.
+        `success` (bool, optional): Flag to indicate whether to check for existence (True) or non-existence (False) of the columns. Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the columns do not match the expectation.
+        `AssertionError`: If the columns do not match the expectation.
     """
     table_columns = get_table_columns(engine, table_name, schema)
     for column in columns:
@@ -308,7 +308,7 @@ def assert_tables_equality(
         src_engine: Engine,
         tgt_engine: Engine,
         table_pairs: List[Tuple[Table, Table]],
-        ignore_cols: set = None,
+        ignore_cols: Set[str] = None,
         success: bool = True
     ) -> None:
     """
@@ -320,31 +320,21 @@ def assert_tables_equality(
 
     Args:
     -----
-        src_engine (Engine): Source database engine.
-        tgt_engine (Engine): Target database engine.
-        table_pairs (List[Tuple[Table, Table]]): List of tuples containing source and target SQLAlchemy Table objects.
-        ignore_cols (set, optional): Set of column names to ignore. Defaults to None.
-        success (bool, optional): Flag to indicate whether to check for equality (True) or inequality (False) of the tables. Defaults to True.
+        `src_engine` (Engine): Source database engine.
+        `tgt_engine` (Engine): Target database engine.
+        `table_pairs` (List[Tuple[Table, Table]]): List of tuples containing source and target SQLAlchemy Table objects.
+        `ignore_cols` (Set[str], optional): Set of column names to ignore. Defaults to None.
+        `success` (bool, optional): Flag to indicate whether to check for equality (True) or inequality (False) of the tables. Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the tables do not match the expectation.
+        `AssertionError`: If the tables do not match the expectation.
     """
     for src_table, tgt_table in table_pairs:
-        if src_table.name.endswith('_a'):
-            assert_views_existence(src_engine, [src_table.name])
-        else:
-            assert_tables_existence(src_engine, [src_table.name])
-        
-        if tgt_table.name.endswith('_a'):
-            assert_views_existence(tgt_engine, [tgt_table.name])
-        else:
-            assert_tables_existence(tgt_engine, [tgt_table.name])
-
         assert_compare_table_schemas(src_table, tgt_table, ignore_cols, success=success)
         assert_compare_table_contents(src_engine, tgt_engine, src_table, tgt_table, ignore_cols, success=success)
 
@@ -354,7 +344,7 @@ def assert_table_data_in_target(
         tgt_engine: Engine,
         src_table: Table,
         tgt_table: Table,
-        ignore_cols: set = None,
+        ignore_cols: Set[str] = None,
         success: bool = True
     ) -> None:
     """
@@ -366,20 +356,20 @@ def assert_table_data_in_target(
 
     Args:
     -----
-        src_engine (Engine): SQLAlchemy engine for the source database.
-        tgt_engine (Engine): SQLAlchemy engine for the target database.
-        src_table (Table): SQLAlchemy Table object for the source table.
-        tgt_table (Table): SQLAlchemy Table object for the target table.
-        ignore_cols (set, optional): Set of column names to ignore. Defaults to None.
-        success (bool, optional): Flag to indicate whether to check for data presence (True) or absence (False). Defaults to True.
+        `src_engine` (Engine): SQLAlchemy engine for the source database.
+        `tgt_engine` (Engine): SQLAlchemy engine for the target database.
+        `src_table` (Table): SQLAlchemy Table object for the source table.
+        `tgt_table` (Table): SQLAlchemy Table object for the target table.
+        `ignore_cols` (Set[str], optional): Set of column names to ignore. Defaults to None.
+        `success` (bool, optional): Flag to indicate whether to check for data presence (True) or absence (False). Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the data presence does not match the expectation.
+        `AssertionError`: If the data presence does not match the expectation.
     """
     src_data = get_table_data(src_engine, src_table, ignore_cols)
     tgt_data = get_table_data(tgt_engine, tgt_table, ignore_cols)
@@ -408,19 +398,19 @@ def assert_tables_data_in_target(
 
     Args:
     -----
-        src_engine (Engine): SQLAlchemy engine for the source database.
-        tgt_engine (Engine): SQLAlchemy engine for the target database.
-        table_pairs (List[Tuple[Table, Table]]): List of tuples containing source and target SQLAlchemy Table objects.
-        ignore_cols (Set[str], optional): Set of column names to ignore. Defaults to None.
-        success (bool, optional): Flag to indicate whether to check for data presence (True) or absence (False). Defaults to True.
+        `src_engine` (Engine): SQLAlchemy engine for the source database.
+        `tgt_engine` (Engine): SQLAlchemy engine for the target database.
+        `table_pairs` (List[Tuple[Table, Table]]): List of tuples containing source and target SQLAlchemy Table objects.
+        `ignore_cols` (Set[str], optional): Set of column names to ignore. Defaults to None.
+        `success` (bool, optional): Flag to indicate whether to check for data presence (True) or absence (False). Defaults to True.
 
     Returns:
     --------
-        None
+        `None`
 
     Raises:
     -------
-        AssertionError: If the data presence does not match the expectation.
+        `AssertionError`: If the data presence does not match the expectation.
     """
     for src_table, tgt_table in table_pairs:
         src_data = get_table_data(src_engine, src_table, ignore_cols)
