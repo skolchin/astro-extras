@@ -12,7 +12,7 @@ def test_run_template_list(docker_ip, docker_services, airflow_credentials, sour
     assert result == 'success'
 
     with source_db.begin() as conn:
-        orig_data = pd.read_sql_table('table_data', conn)
+        orig_data = pd.read_sql_table('test_table_1', conn)
         new_data = pd.read_sql_table('tmp_table_data_1', conn)
         assert new_data.shape == orig_data.shape
         new_data = pd.read_sql_table('tmp_table_data_2', conn)
@@ -24,7 +24,7 @@ def test_run_template_session(docker_ip, docker_services, airflow_credentials, s
     assert result == 'success'
 
     with source_db.begin() as conn:
-        orig_data = pd.read_sql_table('table_data', conn)
+        orig_data = pd.read_sql_table('test_table_1', conn)
         new_data = pd.read_sql_table('tmp_table_data_3', conn)
         assert new_data.shape[0] == orig_data.shape[0]
         assert 'session_id' in new_data.columns

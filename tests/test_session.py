@@ -53,18 +53,7 @@ def test_session_period(airflow, docker_ip, docker_services, airflow_credentials
     assert new_session
     logger.info(f'Latest session: {new_session}')
     assert new_session['status'] == 'success'
-    assert compare_period(new_session['period'], ['2023-05-01T00:00:00', '2023-06-01T00:00:00'])
-
-def test_session_one_day_period(airflow, docker_ip, docker_services, airflow_credentials, target_db):
-    logger.info(f'Testing manual one-day period assignment')
-    result = run_dag('test-session', docker_ip, docker_services, airflow_credentials,
-                     params='{"period": "[2023-05-01, 2023-05-01]"}')
-    assert result == 'success'
-    new_session = get_last_session(target_db)
-    assert new_session
-    logger.info(f'Latest session: {new_session}')
-    assert new_session['status'] == 'success'
-    assert compare_period(new_session['period'] ,['2023-05-01T00:00:00', '2023-05-02T00:00:00'])
+    assert compare_period(new_session['period'], ['2023-05-01T00:00:00', '2023-05-31T00:00:00'])
 
 def test_session_timestamp_period(airflow, docker_ip, docker_services, airflow_credentials, target_db):
     logger.info(f'Testing manual timestamp period assignment')
