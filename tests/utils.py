@@ -4,8 +4,8 @@
 
 import pandas as pd
 
-from typing import Dict, List, Tuple
 from datetime import datetime
+from typing import Dict, List, Set, Tuple
 
 from sqlalchemy.engine import Engine
 from sqlalchemy import (
@@ -38,14 +38,14 @@ def get_table_row_count(
     """
     count_query = select(func.count()).select_from(table)
 
-    with engine.connect() as connection:
-        return connection.execute(count_query).scalar()
+    with engine.begin() as conn:
+        return conn.execute(count_query).scalar()
 
 
 def get_table_data(
         engine: Engine,
         table: Table,
-        ignore_cols: set = None
+        ignore_cols: Set[str] = None
     ) -> pd.DataFrame:
     """
     Returns the data from the specified table as a pandas DataFrame.
@@ -54,14 +54,14 @@ def get_table_data(
     -----
         `engine` (Engine): Engine to use for the query.
         `table` (Table): Table to retrieve data from.
-        `ignore_cols` (set, optional): Columns to ignore.
+        `ignore_cols` (Set[str], optional): Columns to ignore.
 
     Returns:
     --------
         pd.DataFrame: DataFrame containing the table data.
     """
-    with engine.connect() as connection:
-        result = connection.execute(select(table))
+    with engine.begin() as conn:
+        result = conn.execute(select(table))
         data = pd.DataFrame(result.fetchall(), columns=result.keys())
     
     data.columns = data.columns.str.lower()
@@ -97,7 +97,7 @@ def get_table_columns(
 def update_mod_ts_table(
         engine: Engine,
         table: Table,
-        ids: List[int],
+        ids: Set[int],
         new_mod_ts: datetime
     ) -> None:
     """
@@ -107,7 +107,7 @@ def update_mod_ts_table(
     -----
         `engine` (Engine): Database engine.
         `table` (Table): SQLAlchemy Table object.
-        `ids` (List[int]): List of IDs for which to update the `mod_ts` field.
+        `ids` (Set[int]): Set of IDs for which to update the `mod_ts` field.
         `new_mod_ts` (datetime): The new value for the `mod_ts` field.
 
     Returns:
@@ -117,12 +117,12 @@ def update_mod_ts_table(
     stmt = update(table).where(table.c.id.in_(ids)).values(mod_ts=new_mod_ts)
 
     with engine.begin() as conn:
-        conn.execute(stmt) 
+        conn.execute(stmt)
 
 
 def update_mod_ts_tables(
         engine: Engine,
-        table_ids_map: Dict[Table, List[int]],
+        table_ids_map: Dict[Table, Set[int]],
         new_mod_ts: datetime
     ) -> None:
     """
@@ -131,7 +131,7 @@ def update_mod_ts_tables(
     Args:
     -----
         `engine` (Engine): Database engine.
-        `table_ids_map` (Dict[Table, List[int]]): Dictionary where keys are SQLAlchemy Table objects and values are lists of IDs for which to update the `mod_ts` field.
+        `table_ids_map` (Dict[Table, Set[int]]): Dictionary where keys are SQLAlchemy Table objects and values are sets of IDs for which to update the `mod_ts` field.
         `new_mod_ts` (datetime): The new value for the `mod_ts` field.
 
     Returns:
@@ -171,7 +171,7 @@ def insert_records(
 def delete_records(
         engine: Engine,
         table: Table,
-        ids: List[int]
+        ids: Set[int]
     ) -> None:
     """
     Delete records with given IDs from the specified table.
@@ -180,7 +180,7 @@ def delete_records(
     -----
         `engine` (Engine): Database engine.
         `table` (Table): SQLAlchemy Table object.
-        `ids` (List[int]): List of IDs of the records to delete.
+        `ids` (Set[int]): Set of IDs of the records to delete.
 
     Returns:
     --------
@@ -192,7 +192,10 @@ def delete_records(
         conn.execute(stmt)
         
 
-def clear_tables(engine: Engine, tables: List[Table]) -> None:
+def clear_tables(
+        engine: Engine,
+        tables: List[Table]
+    ) -> None:
     """
     Clear the contents of the specified tables.
 
@@ -212,8 +215,8 @@ def clear_tables(engine: Engine, tables: List[Table]) -> None:
 
 
 def create_tables_tuple(
-        engine: Engine, 
-        table_names: List[str], 
+        engine: Engine,
+        table_names: List[str],
         metadata: MetaData
     ) -> Tuple[Table, ...]:
     """
