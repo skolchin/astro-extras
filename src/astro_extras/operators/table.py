@@ -11,6 +11,7 @@ from sqlalchemy import Table as SqlaTable, MetaData as SqlaMetadata
 from sqlalchemy import text, Integer, BigInteger, SmallInteger
 from sqlalchemy.engine.base import Connection as SqlaConnection
 from sqlalchemy.exc import InvalidRequestError as SqlaInvalidRequestError
+from psycopg2.errors import LockNotAvailable
 
 from airflow.models.dag import DagContext
 from airflow.utils.context import Context
@@ -529,7 +530,7 @@ class ActualsTableTransfer(TableTransfer):
                 with dest_conn.begin():
                     # If `replace_data` is set, purge target table
                     if self.replace_data:
-                        dest_conn.execute(text(f'delete from {self.destination_table}'))
+                        dest_conn.execute(text(f'delete from {self.destination_table}').execution_options(autocommit=True))
 
                     # Merge into target table directly using source sql
                     self._row_count = postgres_merge_tables(
@@ -578,7 +579,7 @@ class ActualsTableTransfer(TableTransfer):
                     )
                     self.log.info(f'Source data transferred to {temp_table.name}')
 
-                    with dest_conn.begin():
+                    with dest_conn.begin() as tran:
                         # If `replace_data` is set, purge target table
                         if self.replace_data:
                             self.log.info(f'Cleaning up destination table {self.destination_table}')
@@ -595,10 +596,14 @@ class ActualsTableTransfer(TableTransfer):
                             if_conflicts='update'
                         )
                         self.log.info(f'{self._row_count} records transferred')
+                        tran.commit()
 
                 finally:
                     if not self.keep_temp_table:
-                        self.dest_db.drop_table(temp_table)
+                        try:
+                            self.dest_db.drop_table(temp_table)
+                        except LockNotAvailable:
+                            self.log.error(f'Cannot remove table {temp_table} due to lock timeout. Wait till DAG finishes and remove it yourself.')
 
 class TimedTableTransfer(ChangedTableTransfer):
     """

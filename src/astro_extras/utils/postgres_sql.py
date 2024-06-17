@@ -78,4 +78,5 @@ def postgres_merge_tables(
 
     sql = query.as_string(conn.connection.dbapi_connection)
     _logger.info(f'Executing {sql}')
-    return conn.execute(text(sql).execution_options(autocommit=True)).rowcount
+    # return conn.execute(text(sql).execution_options(autocommit=True)).rowcount
+    return conn.execute(text(sql)).rowcount
