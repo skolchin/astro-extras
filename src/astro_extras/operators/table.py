@@ -10,8 +10,7 @@ from functools import cached_property
 from sqlalchemy import Table as SqlaTable, MetaData as SqlaMetadata
 from sqlalchemy import text, Integer, BigInteger, SmallInteger
 from sqlalchemy.engine.base import Connection as SqlaConnection
-from sqlalchemy.exc import InvalidRequestError as SqlaInvalidRequestError
-from psycopg2.errors import LockNotAvailable
+from sqlalchemy.exc import InvalidRequestError as SqlaInvalidRequestError, OperationalError as SqlaOperationalError
 
 from airflow.models.dag import DagContext
 from airflow.utils.context import Context
@@ -602,8 +601,8 @@ class ActualsTableTransfer(TableTransfer):
                     if not self.keep_temp_table:
                         try:
                             self.dest_db.drop_table(temp_table)
-                        except LockNotAvailable:
-                            self.log.error(f'Cannot remove table {temp_table} due to lock timeout. Wait till DAG finishes and remove it yourself.')
+                        except SqlaOperationalError as ex:
+                            self.log.error(f'Cannot remove table {temp_table} due to error {ex}. Wait till DAG finishes and remove it yourself.')
 
 class TimedTableTransfer(ChangedTableTransfer):
     """
