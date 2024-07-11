@@ -471,10 +471,8 @@ class ActualsTableTransfer(TableTransfer):
         # Find table-specific template
         full_name = db.get_table_qualified_name(table)
         if (sql := get_template(full_name, '.sql', fail_if_not_found=False)):
-            # If such template exist, replace table name with subquery
-            # The subquery should contain the same subset of columns with target table, 
-            # otherwise it might be problems with dataset comparsion
-            full_name = f'({sql})'
+            # If such template exist, use it to extract data
+            return sql
 
         # Get template SQL from package resources
         # The template defines `select` query which takes data from source
