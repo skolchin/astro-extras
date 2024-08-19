@@ -50,6 +50,11 @@ create table public.types(
 );
 comment on table public.types is 'Type dictionary table';
 
+create table public.types2(
+    type_id serial not null primary key,
+    type_name text not null
+);
+
 create table public.table_data(
     id serial not null primary key,
     type_id int not null references types(type_id),
@@ -69,6 +74,9 @@ create table public.ods_data(
 comment on table public.ods_data is 'Data table for ODS-style transfer';
 
 insert into public.types(type_id, type_name)
+values (1, 'Type 1'), (2, 'Type 2'), (3, 'Type 3');
+
+insert into public.types2(type_id, type_name)
 values (1, 'Type 1'), (2, 'Type 2'), (3, 'Type 3');
 
 insert into public.table_data(type_id, comments, created_ts)
@@ -114,6 +122,12 @@ create table stage.types(
 );
 comment on table stage.types is 'Staged types table';
 
+create table stage.types2(
+    session_id int not null references public.sessions(session_id),
+    type_id int not null,
+    type_name text not null
+);
+
 create view stage.types_a as
     select distinct on (t.type_id) t.*
     from stage.types t
@@ -121,6 +135,12 @@ create view stage.types_a as
     order by t.type_id, t.session_id desc;
 
 comment on view stage.types_a is 'Actual data view for stage.types';
+
+create view stage.types2_a as
+    select distinct on (t.type_id) t.*
+    from stage.types2 t
+    inner join public.sessions s on s.session_id = t.session_id and s.status = 'success'
+    order by t.type_id, t.session_id desc;
 
 create table stage.table_data(
     session_id int not null references public.sessions(session_id),

@@ -815,15 +815,17 @@ def _do_transfer_tables(
         ops_list = []
         for (source, target) in zip(source_tables, target_tables):
             source_table = ensure_table(source, source_conn_id)
-            dest_table = ensure_table(target, destination_conn_id) or source_table
+            dest_table = ensure_table(target, destination_conn_id)
             op = op_cls(
                 source_table=source_table,
                 destination_table=dest_table,
                 session=session,
-                **kwargs_with_datasets(
-                    kwargs=kwargs, 
-                    input_datasets=source_table, 
-                    output_datasets=dest_table))
+                inlets=[source_table],
+                outlets=[dest_table])
+                # **kwargs_with_datasets(
+                #     kwargs=kwargs, 
+                #     input_datasets=source_table, 
+                #     output_datasets=dest_table))
             ops_list.append(op)
 
         schedule_ops(ops_list, num_parallel)

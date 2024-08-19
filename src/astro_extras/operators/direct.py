@@ -60,9 +60,11 @@ def run_sql_template(
     @aql.run_raw_sql(conn_id=conn_id,
                     task_id=f'run-{template}',
                     response_size=0,
-                    **kwargs_with_datasets(kwargs=kwargs, 
-                               input_datasets=input_tables,
-                               output_datasets=affected_tables))
+                    inlets=input_tables,
+                    outlets=affected_tables)
+                    # **kwargs_with_datasets(kwargs=kwargs, 
+                    #            input_datasets=input_tables,
+                    #            output_datasets=affected_tables))
     def _run_sql(template: str):
         sql = get_template(template, '.sql', dag=dag, fail_if_not_found=True)
         _logger.info(f'Executing: {sql}')
