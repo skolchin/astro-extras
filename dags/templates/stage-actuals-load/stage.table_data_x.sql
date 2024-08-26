@@ -1,0 +1,1 @@
+select * from stage.table_data_a

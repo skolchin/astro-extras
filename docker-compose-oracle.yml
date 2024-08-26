@@ -20,16 +20,19 @@ x-airflow-common:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres/airflow
-    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: ''
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__CORE__TEST_CONNECTION: 'Enabled'
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: ${AIRFLOW_TIMEZONE:-}
+    AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: 'airflow\..* astro\..* .*\.ETLSession'
+    AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES_REGEXP: 'airflow\..* astro\..* .*\.ETLSession'
+    AIRFLOW__WEBSERVER__SHOW_TRIGGER_FORM_IF_NO_PARAMS: true
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres/airflow
     AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
-    AIRFLOW__CORE__DEFAULT_TIMEZONE: ${AIRFLOW_TIMEZONE:-}
     AIRFLOW__ASTRO_SDK__AUTO_ADD_INLETS_OUTLETS: 'true'
     AIRFLOW__ASTRO_SDK__XCOM_STORAGE_CONN_ID: 'local'
-    AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES_REGEXP: 'airflow\..* astro\..* .*\.ETLSession'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
 
   volumes:
@@ -53,7 +56,7 @@ services:
       PGTZ: ${POSTGRES_TIMEZONE:-UTC}
     volumes:
       - postgres-db-volume:/var/lib/postgresql/data
-      - ./docker/setup_db.sql:/docker-entrypoint-initdb.d/10_setup_db.sql
+      - ./docker/setup_db_pg_ora.sql:/docker-entrypoint-initdb.d/10_setup_db.sql
     ports:
       - 5432:5432
     healthcheck:
@@ -139,8 +142,16 @@ services:
       APP_USER_PASSWORD: ${ORACLE_PASSWORD:-airflow}
     volumes:
       - oracle-volume:/opt/oracle/oradata
+      - ./docker/setup_db_oracle.sql:/container-entrypoint-initdb.d/10_setup_db.sql:ro
     ports:
       - 1521:1521
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+      start_interval: 5s
 
 volumes:
   postgres-db-volume:

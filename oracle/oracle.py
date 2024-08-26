@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import pandas as pd
+import logging
 import sqlalchemy
+import pandas as pd
 from oracledb import OperationalError, init_oracle_client
 from airflow.configuration import conf
 from airflow.providers.oracle.hooks.oracle import OracleHook
@@ -15,19 +16,22 @@ from astro.utils.compat.functools import cached_property
 DEFAULT_CONN_ID = OracleHook.default_conn_name
 
 
+_logger = logging.getLogger('airflow.task')
+
 class OracleDatabase(BaseDatabase):
     def __init__(
         self,
         conn_id: str = DEFAULT_CONN_ID,
         table: BaseTable | None = None,
         load_options: LoadOptions | None = None, 
-        thick_client: bool = conf.getboolean(SECTION_KEY, "thick_oracle_client", fallback=False),
+        thick_client: bool = conf.getboolean(SECTION_KEY, "thick_oracle_client", fallback=True),
 
     ):
         super().__init__(conn_id)
         self.table = table
         self.load_options = load_options
         self.thick_client = thick_client
+        _logger.info(f'Establishing Oracle connection {conn_id} in {"THICK" if thick_client else "THIN"} mode')
         if self.thick_client:
             init_oracle_client()
 

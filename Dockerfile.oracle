@@ -1,4 +1,6 @@
-FROM apache/airflow:slim-2.8.4-python3.10
+ARG REG_PROXY
+ARG AIRFLOW_UID=50000
+FROM ${REG_PROXY}apache/airflow:slim-2.8.4-python3.10
 
 USER 0
 RUN apt-get update && apt-get install -y nano gosu libaio1 unzip
@@ -6,9 +8,9 @@ RUN apt-get install -y locales \
     && localedef -i ru_RU -c -f UTF-8 -A /usr/share/locale/locale.alias ru_RU.UTF-8
 RUN ln -sf /usr/share/zoneinfo/W-SU /etc/localtime
 
-COPY ./oracle/instantclient-basic-linux.x64-21.13.0.0.0dbru.zip /tmp
-RUN unzip /tmp/instantclient-basic-linux.x64-21.13.0.0.0dbru.zip -d /opt/oracle \
-    && mkdir -p /usr/lib/oracle/21.13/client64/lib/network/admin
+COPY ./oracle/instantclient-basic-linux.x64-21.15.0.0.0dbru.zip /tmp
+RUN unzip /tmp/instantclient-basic-linux.x64-21.15.0.0.0dbru.zip -d /opt/oracle \
+    && mkdir -p /usr/lib/oracle/21.15/client64/lib/network/admin
 
 USER $AIRFLOW_UID
 COPY ./docker/requirements-docker-oracle.txt /tmp/requirements.txt
@@ -23,9 +25,10 @@ COPY ./README.md /tmp/astro_extras/
 COPY ./src /tmp/astro_extras/src
 RUN pip install -e /tmp/astro_extras
 COPY ./oracle/oracle.py /home/airflow/.local/lib/python3.10/site-packages/astro/databases
+COPY ./oracle/cx_oracle.py /home/airflow/.local/lib/python3.10/site-packages/sqlalchemy/dialects/oracle/
 
 USER 0
 COPY ./docker/airflow.cfg /opt/airflow/airflow.cfg
 RUN chown -R $AIRFLOW_UID:root /opt/airflow/
-ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_21_13:$LD_LIBRARY_PATH
-ENV PATH=/opt/oracle/instantclient_21_13:$PATH
+ENV LD_LIBRARY_PATH=/opt/oracle/instantclient_21_15:$LD_LIBRARY_PATH
+ENV PATH=/opt/oracle/instantclient_21_15:$PATH

@@ -4,9 +4,9 @@
 """ Table operations """
 
 import logging
-import warnings
 import pandas as pd
 from functools import cached_property
+from deprecated import deprecated
 from sqlalchemy import Table as SqlaTable, MetaData as SqlaMetadata
 from sqlalchemy import text, Integer, BigInteger, SmallInteger
 from sqlalchemy.engine.base import Connection as SqlaConnection
@@ -29,12 +29,18 @@ from .session import ETLSession, ensure_session
 from ..utils.utils import ensure_table, schedule_ops, is_same_database_uri
 from ..utils.template import get_template, get_template_file, get_predefined_template
 from ..utils.data_compare import compare_datasets, compare_timed_dict
-from ..utils.postgres_sql import postgres_merge_tables
+from ..utils.postgres_sql import postgres_merge_tables, postgres_infer_query_structure
 
-from typing import Iterable, Type, Tuple
+from typing import Iterable, Mapping, Type, Tuple, Literal, Any
 
 DEFAULT_CHUNK_SIZE: int = 10000
 """ Chunk size for `pd.to_sql()` calls. Set to value lesser than `DEFAULT_CHUNK_SIZE` in Astro SDK to avoid memory overload """
+
+StageTransferMode = Literal['normal', 'compare', 'sync']
+""" Stage data transfer modes """
+
+ActualsTransferMode = Literal['update', 'replace', 'sync']
+""" Actuals data transfer modes """
 
 class TableTransfer(GenericTransfer):
     """
@@ -213,7 +219,8 @@ class TableTransfer(GenericTransfer):
 
     def _adjust_dtypes(self, data: pd.DataFrame, table: BaseTable) -> pd.DataFrame:
         """ Checks whether `data` column dtypes match given `table` ones and reset them to proper type.
-        This could happen if, for example, source has nulls in `int` columns which would have `float` type in dataframe.
+        This could happen if, for example, source has nulls in `int` columns which would result 
+        in `float` type been assigned by Pandas.
         """
         for col in table.columns:
             if col.name not in data.columns:
@@ -328,12 +335,7 @@ class TableTransfer(GenericTransfer):
             inputs=inputs, outputs=outputs, run_facets=run_facets, job_facets=job_facets
         )
 
-class ChangedTableTransfer(TableTransfer):
-    """
-    Table transfer operator to be used within `transfer_changed_table` function.
-    Compares source and target data and transfers only if any changes detected.
-    Requiures `xxx_a` view to exist on target.
-    """
+class CompareTableTransfer(TableTransfer):
 
     template_fields = ("sql", "preoperator", "source_table", "destination_table", "destination_sql")
     template_fields_renderers = {"sql": "sql", "preoperator": "sql", "destination_sql": "sql"}
@@ -379,14 +381,7 @@ class ChangedTableTransfer(TableTransfer):
         if not self._compare_datasets(self.source_db.connection, self.dest_db.connection, stop_on_first_diff=True):
             return super().execute(context)
 
-class OdsTableTransfer(ChangedTableTransfer):
-    """
-    Table transfer operator to be used within `transfer_ods_table` function
-    to transfer data from source to ODS-style target.
-    
-    Requiures `xxx_a` view to exist on target. Target table must have
-    `_modified' and `_deleted` attributes of `timestamp` or `timestamptz` type.
-    """
+class SyncTableTransfer(CompareTableTransfer):
     ui_color = "#78f07c"
 
     def _save_data(self, data: pd.DataFrame, conn: SqlaConnection, modified: pd.Timestamp, deleted: pd.Timestamp | None, category: str) -> None:
@@ -439,10 +434,6 @@ class OdsTableTransfer(ChangedTableTransfer):
                 self._save_data(dfd, dest_conn, pd.Timestamp.utcnow(), pd.Timestamp.utcnow(), 'deleted')
 
 class ActualsTableTransfer(TableTransfer):
-    """
-    Table transfer operator to be used within `transfer_actuals_table` function.
-    Source and target table must have `_deleted` attribute of `timestamp` or `timestamptz` type.
-    """
 
     ui_color = "#5af07d"
 
@@ -452,16 +443,12 @@ class ActualsTableTransfer(TableTransfer):
         source_table: BaseTable,
         destination_table: BaseTable,
         session: ETLSession | None = None,
-        transfer_delta: bool = True,
-        as_ods: bool = False,
         keep_temp_table: bool = False,
-        replace_data: bool = False,
+        mode: ActualsTransferMode = 'update',
         **kwargs,
     ) -> None:
-        self.transfer_delta = transfer_delta
-        self.as_ods = as_ods
-        self.keep_temp_table = keep_temp_table
-        self.replace_data = replace_data
+        self.mode: ActualsTransferMode = mode
+        self.keep_temp_table: bool = keep_temp_table
         
         super().__init__(source_table=source_table, destination_table=destination_table, session=session, **kwargs)
 
@@ -475,8 +462,7 @@ class ActualsTableTransfer(TableTransfer):
             return sql
 
         # Get template SQL from package resources
-        # The template defines `select` query which takes data from source
-        template = get_predefined_template('table_actuals_select_delta.sql' if self.transfer_delta else 'table_actuals_select_all.sql')
+        template = get_predefined_template('table_actuals_select_delta.sql')
         return template.render(source_table=full_name)
 
     def execute(self, context: Context):
@@ -486,27 +472,50 @@ class ActualsTableTransfer(TableTransfer):
         self._pre_execute(context)
 
         # Verify structure
-        if self.as_ods:
-            # Check source and target meet the ODS requirements
-            if not [c for c in self.source_table_def.columns if c.name == '_deleted']:
-                raise AirflowFailException(f'Source table {self.source_table} does not have `_deleted` column required for ODS-style transfer')
+        if self.mode == 'sync':
+            # Check source and target meet the sync requirements
             if not [c for c in self.dest_table_def.columns if c.name == '_deleted']:
-                raise AirflowFailException(f'Target table {self.destination_table} does not have `_deleted` column required for ODS-style transfer')
+                raise AirflowFailException(f'Target table {self.destination_table} does not have `_deleted` column required for mode=="sync"')
 
         # Build a source-to-target column mapping
-        col_map = {}
-        id_cols = []
-        for src_col in self.source_table_def.columns:
-            dest_cols = [c for c in self.dest_table_def.columns if c.name.lower() == src_col.name.lower()]
-            if not dest_cols:
-                self.log.warning(f'Column {src_col.name} was not found in {self.destination_table} table, skipping')
-            else:
-                # If a column is PK, store it to use in `on conflict` statement part
-                col_map[src_col.name] = dest_cols[0].name
-                if dest_cols[0].primary_key:
-                    id_cols.append(dest_cols[0].name)
+        # Options:
+        #   - source metadata available, target is not: target table does not exist, fail
+        #   - both source and target table metadata (columns) available: build mapping the normal way
+        #   - source metadata not available, target is: could happen if a custom query is used -> run query with `limit 1` addition and
+        #       reconstruct structure from result
+        def build_mapping(source_table_def: BaseTable, dest_table_def: BaseTable) -> Tuple[Mapping, Iterable]:
+            _col_map = {}
+            _id_cols = []
+
+            for src_col in source_table_def.columns:
+                dest_cols = [c for c in dest_table_def.columns if c.name.lower() == src_col.name.lower()]
+                if not dest_cols:
+                    self.log.warning(f'Column {src_col.name} was not found in {self.destination_table} table')
+                else:
+                    # If a column is PK, store it to use in `on conflict` statement part
+                    _col_map[src_col.name] = dest_cols[0].name
+                    if dest_cols[0].primary_key:
+                        _id_cols.append(dest_cols[0].name)
+
+            return _col_map, _id_cols
+
+        match (bool(self.source_table_def.columns), bool(self.dest_table_def.columns)):
+            case (True, False) | (False, False):
+                raise AirflowFailException(f'Could not get destination table {self.destination_table} metadata, does it really exist?')
+
+            case (True, True):
+                self.log.info('Both source and destination metadata are available')
+                col_map, id_cols = build_mapping(self.source_table_def, self.dest_table_def)
+
+            case (False, True):
+                self.log.info('Source metadata is not available, attempting to retrieve from cursor')
+                with self.source_db.connection as src_conn:
+                    src_tbl = postgres_infer_query_structure(self.sql, src_conn, infer_pk=False)
+                    col_map, id_cols = build_mapping(src_tbl, self.dest_table_def)
 
         # Check there are any ID columns on target
+        self.log.debug(f'Column mapping: {col_map}')
+        self.log.debug(f'ID columns: {id_cols}')
         if not id_cols:
             raise AirflowFailException(f'Could not detect primary key on {self.destination_table}')
 
@@ -516,7 +525,7 @@ class ActualsTableTransfer(TableTransfer):
         sql = self.sql.replace('t.id', id_cols_str).replace('t.*', all_cols_str)
         self.log.info(f'Source extraction SQL:\n{sql}')
 
-        # Check whether the hooks point to the same database
+        # Check whether the hooks points to the same database
         same_db = is_same_database_uri(self.source_db.hook.get_uri(), self.dest_db.hook.get_uri())
 
         # Update/merge
@@ -525,8 +534,9 @@ class ActualsTableTransfer(TableTransfer):
                 # Source and destination tables are in the same database, 
                 self.log.info(f'Source and destination tables are in the same database')
                 with dest_conn.begin():
-                    # If `replace_data` is set, purge target table
-                    if self.replace_data:
+                    # Purge target table if requested
+                    if self.mode == 'replace':
+                        self.log.info(f'Purging destination table {self.destination_table}')
                         dest_conn.execute(text(f'delete from {self.destination_table}').execution_options(autocommit=True))
 
                     # Merge into target table directly using source sql
@@ -537,7 +547,8 @@ class ActualsTableTransfer(TableTransfer):
                         source_to_target_columns_map=col_map,
                         target_conflict_columns=id_cols,
                         source_sql=sql,
-                        if_conflicts='update'
+                        if_conflicts='update',
+                        delete_strategy='logical' if self.mode == 'sync' else 'ignore'
                     )
                     self.log.info(f'{self._row_count} records transferred')
 
@@ -558,7 +569,7 @@ class ActualsTableTransfer(TableTransfer):
                     data['session_id'] = self.session.session_id
                     col_map['session_id'] = 'session_id'
 
-                # Temp table has to be created 1st, otherwise it might be column types mismatch
+                # Temp table has to be created 1st, otherwise column types mismatch might occur
                 temp_sqla_table = SqlaTable(temp_table.name, temp_table.sqlalchemy_metadata, *([c.copy() for c in self.source_table_def.columns]))
                 self.destination.sqlalchemy_metadata.create_all(bind=dest_conn, tables=[temp_sqla_table], checkfirst=False)
                 self.log.info(f'{temp_table.name} temporary table created')
@@ -577,9 +588,9 @@ class ActualsTableTransfer(TableTransfer):
                     self.log.info(f'Source data transferred to {temp_table.name}')
 
                     with dest_conn.begin() as tran:
-                        # If `replace_data` is set, purge target table
-                        if self.replace_data:
-                            self.log.info(f'Cleaning up destination table {self.destination_table}')
+                        # Purge target table if requested
+                        if self.mode == 'replace':
+                            self.log.info(f'Purging destination table {self.destination_table}')
                             dest_conn.execute(text(f'delete from {self.destination_table}'))
 
                         # Merge temporary and target tables
@@ -590,7 +601,8 @@ class ActualsTableTransfer(TableTransfer):
                             target_table=self.destination,
                             source_to_target_columns_map=col_map,
                             target_conflict_columns=id_cols,
-                            if_conflicts='update'
+                            if_conflicts='update',
+                            delete_strategy='logical' if self.mode == 'sync' else 'ignore'
                         )
                         self.log.info(f'{self._row_count} records transferred')
                         tran.commit()
@@ -602,7 +614,7 @@ class ActualsTableTransfer(TableTransfer):
                         except SqlaOperationalError as ex:
                             self.log.error(f'Cannot remove table {temp_table} due to error {ex}. Wait till DAG finishes and remove it yourself.')
 
-class TimedTableTransfer(ChangedTableTransfer):
+class TimedTableTransfer(CompareTableTransfer):
     """
     Table transfer operator to be used within `update_timed_dict` function.
     Implements timed dictionary update behaviour.
@@ -649,7 +661,7 @@ class TimedTableTransfer(ChangedTableTransfer):
                 )
 
 
-class CompareTableOperator(ChangedTableTransfer):
+class CompareTableOperator(CompareTableTransfer):
     """
     Table comparsion operator to be used within `compare_table` function.
     Compares source and target data and prints results to log.
@@ -770,68 +782,7 @@ def declare_tables(
     else:
         return [ensure_table(t.lower(), conn_id, schema, database) for t in table_names]
 
-def _do_transfer_table(
-        op_cls: Type[GenericTransfer],
-        source: str | BaseTable,
-        target: str | BaseTable | None,
-        source_conn_id: str | None,
-        destination_conn_id: str | None,
-        session: XComArg | ETLSession | None,
-        **kwargs) -> XComArg:
-    """ Internal - table transfer implementation """
-
-    source_table = ensure_table(source, source_conn_id)
-    dest_table = ensure_table(target or source_table, destination_conn_id)
-
-    op = op_cls(
-        source_table=source_table,
-        destination_table=dest_table,
-        session=session,
-        **kwargs_with_datasets(kwargs=kwargs, 
-                               input_datasets=source_table, 
-                               output_datasets=dest_table)
-    )
-    return XComArg(op)
-
-def _do_transfer_tables(
-        op_cls: Type[GenericTransfer],
-        source_tables: Iterable[str | Table],
-        target_tables: Iterable[str | Table] | None,
-        source_conn_id: str | None,
-        destination_conn_id: str | None,
-        group_id: str | None,
-        num_parallel: int,
-        session: XComArg | ETLSession | None,
-        **kwargs) -> TaskGroup:
-                 
-    """ Internal - transfer multiple tables """
-
-    if target_tables and len(target_tables) != len(source_tables):
-        raise AirflowFailException(f'Source and target tables list size must be equal')
-
-    target_tables = target_tables or source_tables
-
-    with TaskGroup(group_id, add_suffix_on_collision=True, prefix_group_id=False) as tg:
-        ops_list = []
-        for (source, target) in zip(source_tables, target_tables):
-            source_table = ensure_table(source, source_conn_id)
-            dest_table = ensure_table(target, destination_conn_id)
-            op = op_cls(
-                source_table=source_table,
-                destination_table=dest_table,
-                session=session,
-                inlets=[source_table],
-                outlets=[dest_table])
-                # **kwargs_with_datasets(
-                #     kwargs=kwargs, 
-                #     input_datasets=source_table, 
-                #     output_datasets=dest_table))
-            ops_list.append(op)
-
-        schedule_ops(ops_list, num_parallel)
-
-    return tg
-
+@deprecated('`transfer_table()` is deprecated since 0.1.9, use `transfer_stage(mode="normal")` instead')
 def transfer_table(
         source: str | BaseTable,
         target: str | BaseTable | None = None,
@@ -841,102 +792,18 @@ def transfer_table(
         changes_only: bool | None = None,
         **kwargs) -> XComArg:
     
-    """ Cross-database data transfer.
+    """ Cross-database data transfer (deprecated, use `transfer_stage(mode=“normal“)`). """
 
-    This function implements cross-database geterogenous data transfer.
-
-    It reads data from source table into memory and then sequentaly inserts 
-    each record into the target table. Fields order in the source and target tables 
-    must be identical and field types must be compatible, or transfer will fail or produce 
-    undesirable results.
-
-    To limit data selection or customize fields, a SQL template could be 
-    created for the source table (see `astro_extras.utils.template.get_template_file`).
-    The template must ensure fields order and type compatibility with the target table.
-    If transfer is running under `astro_extras.operators.session.ETLSession` context, 
-    a `session_id` field must also be manually added at proper place.
-
-    For example, if these tables are to participate in transfer:
-
-    ``` sql
-    create table source_data ( a int, b text );
-    create table target_data ( session_id int, b text, a int );
-    ```
-
-    then, this SQL template might be created as `source_data.sql` file:
-
-    ``` sql
-    select {{ti.xcom_pull(key="session").session_id}} as session_id, b, a 
-    from source_data;
-    ```
-
-    Args:
-        source: Either a table name or a `Table` object which would be a data source.
-            If a string name is provided, it may contain schema definition denoted by `.`. 
-            For `Table` objects, schema must be defined in `Metadata` field,
-            otherwise Astro SDK might fall to use its default schema.
-            If a SQL template exists for this table name, it will be executed,
-            otherwise all table data will be selected.
-
-        target: Either a table name or a `Table` object where data will be saved into.
-            If a name is provided, it may contain schema definition denoted by `.`. 
-            For `Table` objects, schema must be defined in `Metadata` field,
-            otherwise Astro SDK might fall to use its default schema.
-            If omitted, `source` argument value is used (this makes sense only
-            with string table name and different connections).
-
-        source_conn_id: Source database Airflow connection.
-            Used only with string source table name; for `Table` objects, `conn_id` field is used.
-            If omitted and `session` argument is provided, `session.source_conn_id` will be used.
-
-        destination_conn_id: Destination database Airflow connection.
-            Used only with string target table name; for `Table` objects, `conn_id` field is used.
-            If omitted and `session` argument is provided, `session.destination_conn_id` will be used.
-
-        session:    `ETLSession` object. If set and no SQL template is defined,
-            a `session_id` field will be automatically added to selection.
-
-        changes_only:   If set to `True`, the operator will compare source and target
-            tables and transfer data only when they are different. Target data are obtained
-            by runnning `destination_sql`. By default, this query will be built using 
-            `<destination_table>_a` view to get actual data.
-
-            Deprecated since 0.1.1, use `transfer_changed_table` instead.
-
-        kwargs:     Any parameters passed to underlying operator (e.g. `preoperator`, ...)
-
-    Returns:
-        `XComArg` object
-
-    Examples:
-        Using `Table` objects (note use of `Metadata` object to specify schemas):
-
-        >>> with DAG(...) as dag:
-        >>>     input_table = Table('table_data', conn_id='source_db', 
-        >>>                          metadata=Metadata(schema='public'))
-        >>>     output_table = Table('table_data', conn_id='target_db', 
-        >>>                          metadata=Metadata(schema='stage'))
-        >>>     transfer_table(input_table, output_table)
-
-        Using string table name:
-
-        >>> with DAG(...) as dag, ETLSession('source_db', 'target_db') as sess:
-        >>>     transfer_table('public.table_data', session=sess)
-
-    """
-    if changes_only is not None:
-        warnings.warn('`changes_only` is deprecated since 0.0.13, use `transfer_changed_table()` instead')
-
-    op_cls = TableTransfer if not changes_only else ChangedTableTransfer
-    return _do_transfer_table(
-        op_cls=op_cls,
-        source=source,
-        target=target,
+    return transfer_stage(
+        source_tables=source, 
+        target_tables=target,
         source_conn_id=source_conn_id,
         destination_conn_id=destination_conn_id,
         session=session,
+        mode='normal' if not changes_only else 'compare',
         **kwargs)
 
+@deprecated('`transfer_tables()` is deprecated since 0.1.9, use `transfer_stage(mode="normal")` instead')
 def transfer_tables(
         source_tables: Iterable[str | Table],
         target_tables: Iterable[str | Table] | None = None,
@@ -948,29 +815,20 @@ def transfer_tables(
         changes_only: bool | None = None,
         **kwargs) -> TaskGroup:
 
-    """ Transfer multiple tables.
+    """ Transfer multiple tables (deprecated, use `transfer_stage(mode=“normal“)`). """
 
-    Creates an Airflow task group with transfer tasks for each table pair 
-    from `source_tables` and `target_tables` lists.
-
-    See `transfer_table` for more information.
-    """
-    if changes_only is not None:
-        warnings.warn('`changes_only` is deprecated since 0.1.1, use `transfer_changed_tables()` instead')
-
-    op_cls = TableTransfer if not changes_only else ChangedTableTransfer
-    return _do_transfer_tables(
-        op_cls=op_cls,
-        source_tables=source_tables,
+    return transfer_stage(
+        source_tables=source_tables, 
         target_tables=target_tables,
         source_conn_id=source_conn_id,
         destination_conn_id=destination_conn_id,
-        group_id=group_id or 'transfer-tables',
+        group_id=group_id,
         num_parallel=num_parallel,
         session=session,
-        **kwargs
-    )
+        mode='normal' if not changes_only else 'compare',
+        **kwargs)
 
+@deprecated('`transfer_changed_table()` is deprecated since 0.1.9, use `transfer_stage(mode="compare")` instead')
 def transfer_changed_table(
         source: str | BaseTable,
         target: str | BaseTable | None = None,
@@ -979,39 +837,18 @@ def transfer_changed_table(
         session: XComArg | ETLSession | None = None,
         **kwargs) -> XComArg:
     
-    """ Cross-database changed data transfer.
+    """ Transfer changed table (deprecated, use `transfer_stage(mode="compare)`). """
 
-    This function implements cross-database geterogenous data transfer using snap-shotting
-    mechanism, which is then any change is detected on source, whole source data is transferred
-    to target making a new snapshot there.
-
-    In order to detect these changes, it will load both source and target data and compare
-    row count, structure and each and every record.
-
-    This mode could be used to transfer small-sized tables (dictionaries), especially if
-    the table does not contain any change mark.
-
-    The operator uses templated SQLs to retrieve data from source and target tables
-    (`sql` and `destination_sql` respectively). By default, it expects that an
-    "actual data view" named `<destination_table>_a` to exist on target. This view
-    has to return latest target data snapshot (usually related to last successfull ETL session),
-    see example DAGs for more details.
-
-    See `transfer_table` for details on arguments.
-
-    Returns:
-        `XComArg` object
-
-    """
-    return _do_transfer_table(
-        op_cls=ChangedTableTransfer,
-        source=source,
-        target=target,
+    return transfer_stage(
+        source_tables=source, 
+        target_tables=target,
         source_conn_id=source_conn_id,
         destination_conn_id=destination_conn_id,
         session=session,
+        mode='compare',
         **kwargs)
 
+@deprecated('`transfer_changed_tables()` is deprecated since 0.1.9, use `transfer_stage(mode="compare")` instead')
 def transfer_changed_tables(
         source_tables: Iterable[str | Table],
         target_tables: Iterable[str | Table] | None = None,
@@ -1022,25 +859,20 @@ def transfer_changed_tables(
         session: XComArg | ETLSession | None = None,
         **kwargs) -> TaskGroup:
 
-    """ Transfer multiple changed tables.
+    """ Transfer changed tables (deprecated, use `transfer_stage(mode="compare)`). """
 
-    Creates an Airflow task group with transfer tasks for each table pair 
-    from `source_tables` and `target_tables` lists.
-
-    See `transfer_changed_table` for more information.
-    """
-    return _do_transfer_tables(
-        op_cls=ChangedTableTransfer,
-        source_tables=source_tables,
+    return transfer_stage(
+        source_tables=source_tables, 
         target_tables=target_tables,
         source_conn_id=source_conn_id,
         destination_conn_id=destination_conn_id,
-        group_id=group_id or 'transfer-dict',
+        group_id=group_id,
         num_parallel=num_parallel,
         session=session,
-        **kwargs
-    )
+        mode='compare',
+        **kwargs)
 
+@deprecated('`transfer_ods_table()` is deprecated since 0.1.9, use `transfer_stage(mode="sync")` instead')
 def transfer_ods_table(
         source: str | BaseTable,
         target: str | BaseTable | None = None,
@@ -1049,21 +881,18 @@ def transfer_ods_table(
         session: XComArg | ETLSession | None = None,
         **kwargs) -> XComArg:
     
-    """ Cross-database ODS-like data transfer.
+    """ Cross-database ODS-like data transfer (deprecated, use `transfer_stage(mode="sync“)`). """
 
-    Returns:
-        `XComArg` object
-
-    """
-    return _do_transfer_table(
-        op_cls=OdsTableTransfer,
-        source=source,
-        target=target,
+    return transfer_stage(
+        source_tables=source, 
+        target_tables=target,
         source_conn_id=source_conn_id,
         destination_conn_id=destination_conn_id,
         session=session,
+        mode='sync',
         **kwargs)
 
+@deprecated('`transfer_ods_tables()` is deprecated since 0.1.9, use `transfer_stage(mode="sync")` instead')
 def transfer_ods_tables(
         source_tables: Iterable[str | Table],
         target_tables: Iterable[str | Table] | None = None,
@@ -1074,25 +903,83 @@ def transfer_ods_tables(
         session: XComArg | ETLSession | None = None,
         **kwargs) -> TaskGroup:
 
-    """ Transfer multiple ODS tables.
+    """ Cross-database ODS-like data transfer (deprecated, use `transfer_stage(mode="sync“)`). """
 
-    Creates an Airflow task group with transfer tasks for each table pair 
-    from `source_tables` and `target_tables` lists.
-
-    See `transfer_ods_table` for more information.
-    """
-    return _do_transfer_tables(
-        op_cls=OdsTableTransfer,
-        source_tables=source_tables,
+    return transfer_stage(
+        source_tables=source_tables, 
         target_tables=target_tables,
         source_conn_id=source_conn_id,
         destination_conn_id=destination_conn_id,
-        group_id=group_id or 'transfer-ods-tables',
+        group_id=group_id,
         num_parallel=num_parallel,
         session=session,
-        **kwargs
-    )
+        mode='sync',
+        **kwargs)
 
+_STAGE_MODE_MAP = {
+    'normal': {'op_cls': TableTransfer, 'default_group': 'transfer-tables' },
+    'compare': {'op_cls': CompareTableTransfer, 'default_group': 'transfer-dict' },
+    'sync': {'op_cls': SyncTableTransfer, 'default_group': 'transfer-ods-tables' },
+}
+
+def transfer_stage(
+        source_tables: Table | str | Iterable[str | Table],
+        target_tables: Table | str | Iterable[str | Table] | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        session: XComArg | ETLSession | None = None,
+        mode: StageTransferMode = 'normal',
+        **kwargs) -> XComArg | TaskGroup:
+
+    """ Snapshot data transfer """
+
+    if (mode_info := _STAGE_MODE_MAP.get(mode)) is None:
+        raise AirflowFailException(f'Invalid stage transfer mode {mode}')
+
+    if isinstance(source_tables, (Table, str)):
+        # Single table
+        source_table = ensure_table(source_tables, source_conn_id)
+        dest_table = ensure_table(target_tables or source_tables, destination_conn_id)
+
+        op = mode_info['op_cls'](
+            source_table=source_table,
+            destination_table=dest_table,
+            session=session,
+            inlets=[source_table],
+            outlets=[dest_table],
+            **kwargs
+        )
+        return XComArg(op)
+
+    # Multiple tables
+    if target_tables and len(target_tables) != len(source_tables):
+        raise AirflowFailException(f'Source and target tables list size must be equal')
+
+    target_tables = target_tables or source_tables
+    group_id = group_id or mode_info['default_group']
+
+    with TaskGroup(group_id, add_suffix_on_collision=True, prefix_group_id=False) as tg:
+        ops_list = []
+        for (source, target) in zip(source_tables, target_tables):
+            source_table = ensure_table(source, source_conn_id)
+            dest_table = ensure_table(target, destination_conn_id)
+            op = mode_info['op_cls'](
+                source_table=source_table,
+                destination_table=dest_table,
+                session=session,
+                inlets=[source_table],
+                outlets=[dest_table],
+                **kwargs
+            )
+            ops_list.append(op)
+
+        schedule_ops(ops_list, num_parallel)
+
+    return tg
+
+@deprecated('`transfer_actuals_table()` is deprecated since 0.1.9, use `transfer_actuals()` instead')
 def transfer_actuals_table(
         source: str | BaseTable,
         target: str | BaseTable | None = None,
@@ -1105,28 +992,22 @@ def transfer_actuals_table(
         replace_data: bool = False,
         **kwargs) -> XComArg:
     
-    """ Transfer table from stage to actuals.
+    """ Transfer table from stage to actuals (deprecated, use `transfer_actuals()`). """
 
-    Returns:
-        `XComArg` object
+    assert transfer_delta, '`transfer_delta == False` is no longer supported, use custom SQL-template to emulate this logic'
 
-    """
-    assert session is not None, 'Transfer to actuals requires ETL session'
-
-    kwargs['transfer_delta'] = transfer_delta
-    kwargs['as_ods'] = as_ods
-    kwargs['keep_temp_table'] = keep_temp_table
-    kwargs['replace_data'] = replace_data
-
-    return _do_transfer_table(
-        op_cls=ActualsTableTransfer,
-        source=source,
-        target=target,
+    return transfer_actuals(
+        source_tables=source,
+        target_tables=target,
         source_conn_id=source_conn_id,
         destination_conn_id=destination_conn_id,
         session=session,
-        **kwargs)
+        keep_temp_table=keep_temp_table,
+        mode='sync' if as_ods else 'replace' if replace_data else 'update',
+        **kwargs
+    )
 
+@deprecated('`transfer_actuals_tables()` is deprecated since 0.1.9, use `transfer_actuals()` instead')
 def transfer_actuals_tables(
         source_tables: Iterable[str | Table],
         target_tables: Iterable[str | Table] | None = None,
@@ -1141,26 +1022,164 @@ def transfer_actuals_tables(
         replace_data: bool = False,
         **kwargs) -> TaskGroup:
 
-    """ Transfer multiple tables from stage to actuals.
-    """
-    assert session is not None, 'Transfer to actuals requires ETL session'
+    """ Transfer tables from stage to actuals (deprecated, use `transfer_actuals()`). """
 
-    kwargs['transfer_delta'] = transfer_delta
-    kwargs['as_ods'] = as_ods
-    kwargs['keep_temp_table'] = keep_temp_table
-    kwargs['replace_data'] = replace_data
+    assert transfer_delta, '`transfer_delta == False` is no longer supported, use custom SQL-template to emulate this logic'
 
-    return _do_transfer_tables(
-        op_cls=ActualsTableTransfer,
+    return transfer_actuals(
         source_tables=source_tables,
         target_tables=target_tables,
         source_conn_id=source_conn_id,
         destination_conn_id=destination_conn_id,
-        group_id=group_id or 'transfer-actuals',
+        group_id=group_id,
         num_parallel=num_parallel,
         session=session,
+        keep_temp_table=keep_temp_table,
+        mode='sync' if as_ods else 'replace' if replace_data else 'update',
         **kwargs
     )
+
+def transfer_actuals(
+        source_tables: Table | str | Iterable[str | Table],
+        target_tables: Table | str | Iterable[str | Table] | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        session: XComArg | ETLSession | None = None,
+        keep_temp_table: bool = False,
+        mode: ActualsTransferMode = 'update',
+        **kwargs) -> TaskGroup:
+
+    """ Actuals (DDS) update """
+    assert session is not None, 'Transfer to actuals requires ETL session'
+
+    if isinstance(source_tables, (Table, str)):
+        # Single table
+        source_table = ensure_table(source_tables, source_conn_id)
+        dest_table = ensure_table(target_tables or source_tables, destination_conn_id)
+
+        op = ActualsTableTransfer(
+            source_table=source_table,
+            destination_table=dest_table,
+            session=session,
+            keep_temp_table=keep_temp_table,
+            mode=mode,
+            inlets=[source_table],
+            outlets=[dest_table],
+            **kwargs
+        )
+        return XComArg(op)
+
+    # Multiple tables
+    if target_tables and len(target_tables) != len(source_tables):
+        raise AirflowFailException(f'Source and target tables list size must be equal')
+
+    target_tables = target_tables or source_tables
+    group_id = group_id or 'transfer-actuals'
+
+    with TaskGroup(group_id, add_suffix_on_collision=True, prefix_group_id=False) as tg:
+        ops_list = []
+        for (source, target) in zip(source_tables, target_tables):
+            source_table = ensure_table(source, source_conn_id)
+            dest_table = ensure_table(target, destination_conn_id)
+            op = ActualsTableTransfer(
+                source_table=source_table,
+                destination_table=dest_table,
+                session=session,
+                keep_temp_table=keep_temp_table,
+                mode=mode,
+                inlets=[source_table],
+                outlets=[dest_table],
+                **kwargs
+            )
+            ops_list.append(op)
+
+        schedule_ops(ops_list, num_parallel)
+
+    return tg
+
+    # This function implements cross-database geterogenous data transfer.
+
+    # It reads data from source table into memory and then sequentaly inserts 
+    # each record into the target table. Fields order in the source and target tables 
+    # must be identical and field types must be compatible, or transfer will fail or produce 
+    # undesirable results.
+
+    # To limit data selection or customize fields, a SQL template could be 
+    # created for the source table (see `astro_extras.utils.template.get_template_file`).
+    # The template must ensure fields order and type compatibility with the target table.
+    # If transfer is running under `astro_extras.operators.session.ETLSession` context, 
+    # a `session_id` field must also be manually added at proper place.
+
+    # For example, if these tables are to participate in transfer:
+
+    # ``` sql
+    # create table source_data ( a int, b text );
+    # create table target_data ( session_id int, b text, a int );
+    # ```
+
+    # then, this SQL template might be created as `source_data.sql` file:
+
+    # ``` sql
+    # select {{ti.xcom_pull(key="session").session_id}} as session_id, b, a 
+    # from source_data;
+    # ```
+
+    # Args:
+    #     source: Either a table name or a `Table` object which would be a data source.
+    #         If a string name is provided, it may contain schema definition denoted by `.`. 
+    #         For `Table` objects, schema must be defined in `Metadata` field,
+    #         otherwise Astro SDK might fall to use its default schema.
+    #         If a SQL template exists for this table name, it will be executed,
+    #         otherwise all table data will be selected.
+
+    #     target: Either a table name or a `Table` object where data will be saved into.
+    #         If a name is provided, it may contain schema definition denoted by `.`. 
+    #         For `Table` objects, schema must be defined in `Metadata` field,
+    #         otherwise Astro SDK might fall to use its default schema.
+    #         If omitted, `source` argument value is used (this makes sense only
+    #         with string table name and different connections).
+
+    #     source_conn_id: Source database Airflow connection.
+    #         Used only with string source table name; for `Table` objects, `conn_id` field is used.
+    #         If omitted and `session` argument is provided, `session.source_conn_id` will be used.
+
+    #     destination_conn_id: Destination database Airflow connection.
+    #         Used only with string target table name; for `Table` objects, `conn_id` field is used.
+    #         If omitted and `session` argument is provided, `session.destination_conn_id` will be used.
+
+    #     session:    `ETLSession` object. If set and no SQL template is defined,
+    #         a `session_id` field will be automatically added to selection.
+
+    #     changes_only:   If set to `True`, the operator will compare source and target
+    #         tables and transfer data only when they are different. Target data are obtained
+    #         by runnning `destination_sql`. By default, this query will be built using 
+    #         `<destination_table>_a` view to get actual data.
+
+    #         Deprecated since 0.1.1, use `transfer_changed_table` instead.
+
+    #     kwargs:     Any parameters passed to underlying operator (e.g. `preoperator`, ...)
+
+    # Returns:
+    #     `XComArg` object
+
+    # Examples:
+    #     Using `Table` objects (note use of `Metadata` object to specify schemas):
+
+    #     >>> with DAG(...) as dag:
+    #     >>>     input_table = Table('table_data', conn_id='source_db', 
+    #     >>>                          metadata=Metadata(schema='public'))
+    #     >>>     output_table = Table('table_data', conn_id='target_db', 
+    #     >>>                          metadata=Metadata(schema='stage'))
+    #     >>>     transfer_table(input_table, output_table)
+
+    #     Using string table name:
+
+    #     >>> with DAG(...) as dag, ETLSession('source_db', 'target_db') as sess:
+    #     >>>     transfer_table('public.table_data', session=sess)
+
+    # """
 
 def compare_table(
         source: str | BaseTable,

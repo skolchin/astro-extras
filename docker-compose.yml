@@ -27,6 +27,7 @@ x-airflow-common:
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
     AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
     AIRFLOW__CORE__DEFAULT_TIMEZONE: ${AIRFLOW_TIMEZONE:-}
+    AIRFLOW__CORE__TEST_CONNECTION: 'true'
     AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: 'airflow\..* astro\..* .*\.ETLSession'
     AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES_REGEXP: 'airflow\..* astro\..* .*\.ETLSession'
     AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
