@@ -505,13 +505,14 @@ class ActualsTableTransfer(TableTransfer):
 
             case (True, True):
                 self.log.info('Both source and destination metadata are available')
-                col_map, id_cols = build_mapping(self.source_table_def, self.dest_table_def)
+                src_tbl = self.source_table_def
 
             case (False, True):
                 self.log.info('Source metadata is not available, attempting to retrieve from cursor')
                 with self.source_db.connection as src_conn:
                     src_tbl = postgres_infer_query_structure(self.sql, src_conn, infer_pk=False)
-                    col_map, id_cols = build_mapping(src_tbl, self.dest_table_def)
+
+        col_map, id_cols = build_mapping(src_tbl, self.dest_table_def)
 
         # Check there are any ID columns on target
         self.log.debug(f'Column mapping: {col_map}')
@@ -563,14 +564,12 @@ class ActualsTableTransfer(TableTransfer):
                     self.log.info('No data to transfer')
                     return
                 self.log.info(f'{len(data)} records to be transferred (chunk size is {self.chunk_size})')
-                
+
+                # Adjust data types to target table structure                
                 data = self._adjust_dtypes(data, self.dest_table_def)
-                if self.session:
-                    data['session_id'] = self.session.session_id
-                    col_map['session_id'] = 'session_id'
 
                 # Temp table has to be created 1st, otherwise column types mismatch might occur
-                temp_sqla_table = SqlaTable(temp_table.name, temp_table.sqlalchemy_metadata, *([c.copy() for c in self.source_table_def.columns]))
+                temp_sqla_table = SqlaTable(temp_table.name, temp_table.sqlalchemy_metadata, *([c.copy() for c in src_tbl.columns]))
                 self.destination.sqlalchemy_metadata.create_all(bind=dest_conn, tables=[temp_sqla_table], checkfirst=False)
                 self.log.info(f'{temp_table.name} temporary table created')
 
