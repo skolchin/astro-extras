@@ -414,15 +414,11 @@ class SyncTableTransfer(CompareTableTransfer):
         self._pre_execute(context)
 
         # Verify target table structure
-        n_col = 0
         if self.session is not None:
-            if self.dest_table_def.columns[n_col].name.lower() != 'session_id':
-                raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: `session_id` missing or at improper place')
-            n_col += 1
-        if self.dest_table_def.columns[n_col].name.lower() != '_modified':
-            raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: `_modified` column missing or at improper place')
-        if self.dest_table_def.columns[n_col+1].name.lower() != '_deleted':
-            raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: `_deleted` column missing or at improper place')
+            for req_col in ['session_id', '_modified', '_deleted']:
+                cols = [col.name for col in self.dest_table_def.columns if col.name.lower() == req_col]
+                if not cols:
+                    raise AirflowFailException(f'Invalid ODS table {self.destination_table} structure: {req_col} attribute is missing')
 
         # compare datasets and save delta frames to target (new/modified/deleted)
         self._row_count = 0
