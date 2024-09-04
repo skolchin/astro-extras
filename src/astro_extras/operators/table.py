@@ -723,8 +723,8 @@ def load_table(
                         task_id=f'load-{table}',
                         results_format='pandas_dataframe')
         def _load_table_by_name(table: str, session: ETLSession | None):
-            sql_file = get_template_file(table, '.sql', dag=dag)
-            return sql or sql_file or f'select * from {table}'
+            sql_from_template = get_template(table, '.sql', dag=dag)
+            return sql or sql_from_template or f'select * from {table}'
 
         return _load_table_by_name(table, session)
     else:
