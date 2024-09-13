@@ -79,7 +79,7 @@ class TableTransfer(GenericTransfer):
     """ Flag to use in-memory transfer (othewise it would be Airflow's cursor-based, which is several times slower) """
 
     chunk_size: int
-    """ Chunk size for `pd.to_sql() calls """
+    """ Chunk size for `pd.to_sql()` calls """
 
     def __init__(
         self,

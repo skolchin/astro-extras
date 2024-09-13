@@ -27,7 +27,8 @@ values
 	('target_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
 	('stage_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
 	('actuals_db','postgres','','postgres','actuals_db','postgres','918ja620_82',5432,false,false,''),
-	('dwh_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,'');
+	('dwh_db','postgres','','postgres','target_db','postgres','918ja620_82',5432,false,false,''),
+	('fs_test','fs',NULL,NULL,NULL,NULL,NULL,NULL,false,false,'{"path": "/tmp/test"}');
 
 --
 -- Marquez DB setup
