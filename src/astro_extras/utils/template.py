@@ -57,11 +57,17 @@ def get_template_file(
     """
 
     dag = dag or DagContext.get_current_dag()
+    if dag is None:
+        if fail_if_not_found:
+            raise AirflowFailException('Cannot retrieve DAG context')
+        return None
+    
     ext = '.' + ext if not ext.startswith('.') else ext
     rel_file_name = os.path.join('templates', dag.dag_id, template + ext)
     full_file_name = os.path.join(conf.get('core','dags_folder'), rel_file_name)
     if os.path.exists(full_file_name):
         return rel_file_name
+    
     if fail_if_not_found:
         raise AirflowFailException(f'Template file {full_file_name} was not found')
     return None
