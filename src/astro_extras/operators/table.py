@@ -707,9 +707,9 @@ class CompareTableIdsOperator(TableTransfer):
         # If `extra_fields` provided, append additional columns to check upon
         if isinstance(self.extra_fields, dict):
             # Dict should have table name as a key
-            id_cols.append(self.extra_fields.get(self.source_table, []))
+            id_cols.extend(self.extra_fields.get(self.source_table, []))
         else:
-            id_cols.append(self.extra_fields)
+            id_cols.extend(self.extra_fields)
 
         # Determine source and target table names
         # If a table does not have a key or has `_deleted` column, switch to `_a` view, otherwise use original table name
