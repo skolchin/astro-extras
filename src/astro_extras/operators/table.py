@@ -5,11 +5,12 @@
 
 import logging
 import pandas as pd
-from functools import cached_property
+from io import StringIO
 from deprecated import deprecated
-from sqlalchemy import Table as SqlaTable, MetaData as SqlaMetadata
+from functools import cached_property
 from sqlalchemy import text, Integer, BigInteger, SmallInteger
 from sqlalchemy.engine.base import Connection as SqlaConnection
+from sqlalchemy import Table as SqlaTable, MetaData as SqlaMetadata
 from sqlalchemy.exc import InvalidRequestError as SqlaInvalidRequestError, OperationalError as SqlaOperationalError
 
 from airflow.models.dag import DagContext
@@ -670,6 +671,79 @@ class CompareTableOperator(CompareTableTransfer):
         if not self._compare_datasets(self.source_db.connection, self.dest_db.connection, stop_on_first_diff=True, logger=logger):
             raise AirflowFailException(f'Differences detected')
 
+class CompareTableIdsOperator(TableTransfer):
+    """
+    Table comparsion operator to be used within `compare_table_ids` function.
+    Compares source and target data and prints results to log.
+    """
+    ui_color = "#db79da"
+
+    def __init__(self, 
+                 *,
+                 table: str, 
+                 source_conn_id: str,
+                 destination_conn_id: str,
+                 **kwargs,):
+        
+        src_table = ensure_table(table, source_conn_id)
+        dest_table = ensure_table(table, destination_conn_id)
+        super().__init__(source_table=src_table, destination_table=dest_table, **kwargs)
+
+    def execute(self, context):
+        """ Execute operator """
+
+        # Find ID column(-s)
+        src_id_cols = [col.name for col in self.source_table_def.columns if col.primary_key]
+        dest_id_cols = [col.name for col in self.dest_table_def.columns if col.primary_key]
+        if src_id_cols and dest_id_cols and set(src_id_cols) != dest_id_cols:
+            raise AirflowFailException(f'IDs on {self.source_table} and {self.destination_table} do not match: {src_id_cols} / {dest_id_cols}')
+
+        id_cols = dest_id_cols or src_id_cols
+        if not id_cols:
+            raise AirflowFailException(f'Could not detect primary key on {self.source_table} or {self.destination_table}')
+
+        # Determine source and target table names
+        # If a table does not have a key or has `_deleted` column, switch to `_a` view, otherwise use original table name
+        src_table = self.source_table
+        if not src_id_cols or len([col for col in self.source_table_def.columns if col.name == '_deleted']):
+            src_table += '_a'
+        dest_table = self.destination_table
+        if not dest_id_cols or len([col for col in self.dest_table_def.columns if col.name == '_deleted']):
+            dest_table += '_a'
+
+        joined_cols = ",".join(id_cols)
+        src_sql = f'select distinct {joined_cols} from {src_table}'
+        dest_sql = f'select distinct {joined_cols} from {dest_table}'
+
+        with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn:
+            self.log.info(f'Executing: {src_sql}')
+            src_df = pd.read_sql(src_sql, src_conn)
+
+            self.log.info(f'Executing: {dest_sql}')
+            dest_df = pd.read_sql(dest_sql, dest_conn)
+
+            diff = src_df.merge(dest_df, on=id_cols, how='outer', indicator=True) \
+                .query('_merge != "both"') \
+                .assign(source=lambda df: df['_merge'].map({
+                    'left_only': f'{self.source_conn_id}.{src_table}', 
+                    'right_only': f'{self.destination_conn_id}.{dest_table}'})) \
+                .drop(columns=['_merge'])
+
+        if diff.empty:
+            self.log.info(f'No differences between {self.source_conn_id}.{src_table} and {self.destination_conn_id}.{dest_table}')
+            return
+
+        if len(diff) > 100:
+            self.log.warning(f'Too many differences found, only 1st 100 out of {len(diff)} are to be displayed')
+            diff = diff.head(100)
+
+        buf = StringIO()
+        diff.to_string(buf, index=False)
+        self.log.info(f'Differences between {self.source_conn_id}.{src_table} and {self.destination_conn_id}.{dest_table}:\n' \
+                      f'{buf.getvalue()}')
+
+### Operator functions
+
 def load_table(
         table: str | BaseTable,
         conn_id: str | None = None,
@@ -1183,25 +1257,36 @@ def compare_table(
         destination_conn_id: str | None = None,
         **kwargs) -> TaskGroup:
 
-    """ Compare two tables.
+    source_table = ensure_table(source, source_conn_id)
+    dest_table = ensure_table(target or source_table, destination_conn_id)
 
-    Creates a task of `CompareTableTransfer` operator to compare
-    given tables, which would fail if any differences
+    op = CompareTableOperator(
+        source_table=source_table, 
+        destination_table=dest_table, 
+        task_id=f'compare-{source_table.name}')
+    return XComArg(op)
+
+def compare_tables(
+        source_tables: str | Iterable[str | Table],
+        target_tables: str | Iterable[str | Table] | None = None,
+        source_conn_id: str | None = None,
+        destination_conn_id: str | None = None,
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        **kwargs) -> TaskGroup:
+
+    """ Compares one or multiple tables.
+
+    Creates a set of `CompareTableOperator` operators 
+    for each pair from `source_tables` and `target_tables` lists.
+    Each operator will compare source and target table and fails if any differences
     are detected among them.
 
     Args:
-        source: Either a table name or a `Table` object which would be a data source.
-            If a string name is provided, it may contain schema definition denoted by `.`. 
-            For `Table` objects, schema must be defined in `Metadata` field,
-            otherwise Astro SDK might fall to use its default schema.
-            If a SQL template exists for this table name, it will be executed,
-            otherwise all table data will be selected.
+        source_tables: Single table name or a `Table` object or list of such tables.
 
-        target: Either a table name or a `Table` object where data will be saved into.
-            If a name is provided, it may contain schema definition denoted by `.`. 
-            For `Table` objects, schema must be defined in `Metadata` field,
-            otherwise Astro SDK might fall to use its default schema.
-            If omitted, `source` argument value is used (this makes sense only
+        target_tables: Single table name or a `Table` object or list of such tables.
+            If omitted, `source_tables` argument value is used (this makes sense only
             with string table name and different connections).
 
         source_conn_id: Source database Airflow connection.
@@ -1213,36 +1298,21 @@ def compare_table(
             If omitted and `session` argument is provided, `session.destination_conn_id` will be used.
 
     """
-    source_table = ensure_table(source, source_conn_id)
-    dest_table = ensure_table(target or source_table, destination_conn_id)
+    if isinstance(source_tables, (Table, str)):
+        # Single table
+        source_table = ensure_table(source_tables, source_conn_id)
+        dest_table = ensure_table(target_tables or source_table, destination_conn_id)
 
-    op = CompareTableOperator(
-        source_table=source_table, 
-        destination_table=dest_table, 
-        task_id=f'compare-{source_table.name}')
-    return XComArg(op)
+        op = CompareTableOperator(
+            source_table=source_table, 
+            destination_table=dest_table, 
+            task_id=f'compare-{source_table.name}')
+        return XComArg(op)
 
-def compare_tables(
-        source_tables: Iterable[str | Table],
-        target_tables: Iterable[str | Table] | None = None,
-        source_conn_id: str | None = None,
-        destination_conn_id: str | None = None,
-        group_id: str | None = None,
-        num_parallel: int = 1,
-        **kwargs) -> TaskGroup:
-
-    """ Compares multiple tables.
-
-    Creates an Airflow task group consisting of `CompareTableTransfer` operators 
-    for each table pair from `source_tables` and `target_tables` lists.
-    Each operator will compare source and target table and fails if any differences
-    are detected among them.
-
-    See `compare_table` for details.
-    """
+    # Multiple tables
     if not target_tables or len(target_tables) != len(source_tables):
         raise AirflowFailException(f'Source and target tables list size must be equal')
-
+    
     with TaskGroup(group_id or 'compare-tables', add_suffix_on_collision=True) as tg:
         ops_list = []
         for (source, target) in zip(source_tables, target_tables):
@@ -1256,27 +1326,59 @@ def compare_tables(
         schedule_ops(ops_list, num_parallel)
     return tg
 
-def update_timed_table(
-        source: str | BaseTable,
-        target: str | BaseTable | None = None,
+def compare_table_ids(
+        tables: str | Iterable[str],
         source_conn_id: str | None = None,
         destination_conn_id: str | None = None,
-        session: XComArg | ETLSession | None = None,
-        **kwargs) -> XComArg:
-    
-    """ Updates timed dictionary table (experimental) """
+        group_id: str | None = None,
+        num_parallel: int = 1,
+        **kwargs) -> TaskGroup:
 
-    source_table = ensure_table(source, source_conn_id)
-    dest_table = ensure_table(target, destination_conn_id) or source_table
-    op = TimedTableTransfer(
-        source_table=source_table,
-        destination_table=dest_table,
-        session=session,
-        **kwargs_with_datasets(kwargs=kwargs, 
-                               input_datasets=source_table, 
-                               output_datasets=dest_table)
-    )
-    return XComArg(op)
+    """ Compares IDs of one or multiple tables.
+
+    Creates a set of `CompareTableIdsOperator` operators for given tables.
+    Each operator will compare IDs presented for given table on
+    source and destination databases and report of any differences.
+
+    Args:
+        tables: Single table name or list of table names.
+
+        source_conn_id: Source database Airflow connection.
+            Used only with string source table name; for `Table` objects, `conn_id` field is used.
+            If omitted and `session` argument is provided, `session.source_conn_id` will be used.
+
+        destination_conn_id: Destination database Airflow connection.
+            Used only with string target table name; for `Table` objects, `conn_id` field is used.
+            If omitted and `session` argument is provided, `session.destination_conn_id` will be used.
+
+    """
+    match tables:
+        case str():
+            # Single table
+            op = CompareTableIdsOperator(
+                table=tables,
+                source_conn_id=source_conn_id,
+                destination_conn_id=destination_conn_id,
+                task_id=f'compare-{table}')
+            return XComArg(op)
+        
+        case list() if isinstance(tables[0], str):
+            # Multiple tables
+            with TaskGroup(group_id or 'compare-tables', add_suffix_on_collision=True) as tg:
+                ops_list = []
+                for table in tables:
+                    op = CompareTableIdsOperator(
+                        table=table,
+                        source_conn_id=source_conn_id,
+                        destination_conn_id=destination_conn_id,
+                        task_id=f'compare-{table}')
+                    ops_list.append(op)
+                schedule_ops(ops_list, num_parallel)
+            return tg
+
+        case _:
+            raise ValueError(f'Invalid argument type: `str` or `list[str]` is expected, {type(tables)!r} provided')
+
 
 def update_timed_tables(
         source_tables: Iterable[str | Table],

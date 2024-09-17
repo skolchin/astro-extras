@@ -385,6 +385,9 @@ def get_session_period(context: Context | None = None) -> Tuple[str, str]:
     DAG run parameter, which must be provided as two valid dates or datetimes defining
     lower and upper bound of loading period. If a date-only upper bound is used,
     it will be increased to hold entire day (see examples).
+
+    Period parameter might be either a list of iso-formatted datetimes or
+    a string enclosing such a list (see examples).
     
     If this option was not specified, loading period will be set as interval of
     `[data_interval_start, data_interval_end]` Airflow variables 
@@ -405,7 +408,7 @@ def get_session_period(context: Context | None = None) -> Tuple[str, str]:
         ```
         {"period": "[2023-05-01, 2023-05-31]"}
             -> ["2023-05-01T00:00:00", "2023-06-01T00:00:00"]
-        {"period": "[2023-05-01, 2023-05-01]"} 
+        {"period": ["2023-05-01", "2023-05-01"]} 
             -> ["2023-05-01T00:00:00", "2023-05-02T00:00:00"]
         {"period": "[2023-05-01T12:00:00, 2023-05-01T14:00:00]"} 
             -> ["2023-05-01T10:00:00", "2023-05-01T14:00:00"]
@@ -414,13 +417,23 @@ def get_session_period(context: Context | None = None) -> Tuple[str, str]:
     """
     context = context or get_current_context()
 
-    if (period_str := context['dag_run'].conf.get('period')):
-        if not re.match(_FULL_REGX, period_str):
-            raise AirflowFailException('Period must be specified as {"period": "[<from>,<to>]"}, got %s instead', period_str)
-        
-        period = [isoparse(x.group(0)) for x in re.finditer(_TS_REGX, period_str)]
-        if len(period) < 2:
-            raise AirflowFailException('Invalid period: two valid dates in ISO format must be specified, got %s instead', period_str)
+    if (period_param := context['dag_run'].conf.get('period')) is not None:
+        match period_param:
+            case str():
+                if not re.match(_FULL_REGX, period_param):
+                    raise AirflowFailException('Period must be specified as {"period": "[<from>,<to>]"}, got %s instead', period_param)
+                
+                period = [isoparse(x.group(0)) for x in re.finditer(_TS_REGX, period_param)]
+                if len(period) != 2:
+                    raise AirflowFailException('Invalid period: exactly two dates in ISO format must be specified, got %s instead', period_param)
+                
+            case list() | tuple():
+                if len(period_param) != 2:
+                    raise AirflowFailException('Invalid period: exactly two dates in ISO format must be specified, got %s instead', period_param)
+                period = [isoparse(x) for x in period_param]
+
+            case _:
+                raise AirflowFailException('Unknown type of `period` parameter: either string or list expected, got %s instead', type(period_param))
 
         if period[1] <= period[0]:
             raise AirflowFailException('Upper period bound must be greater than lower bound')
