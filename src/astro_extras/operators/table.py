@@ -683,11 +683,13 @@ class CompareTableIdsOperator(TableTransfer):
                  table: str, 
                  source_conn_id: str,
                  destination_conn_id: str,
+                 extra_fields: Iterable[str] | Mapping[str, str] | None = None,
                  **kwargs,):
         
         src_table = ensure_table(table, source_conn_id)
         dest_table = ensure_table(table, destination_conn_id)
         super().__init__(source_table=src_table, destination_table=dest_table, **kwargs)
+        self.extra_fields = extra_fields
 
     def execute(self, context):
         """ Execute operator """
@@ -701,6 +703,13 @@ class CompareTableIdsOperator(TableTransfer):
         id_cols = dest_id_cols or src_id_cols
         if not id_cols:
             raise AirflowFailException(f'Could not detect primary key on {self.source_table} or {self.destination_table}')
+
+        # If `extra_fields` provided, append additional columns to check upon
+        if isinstance(self.extra_fields, dict):
+            # Dict should have table name as a key
+            id_cols.append(self.extra_fields.get(self.source_table, []))
+        else:
+            id_cols.append(self.extra_fields)
 
         # Determine source and target table names
         # If a table does not have a key or has `_deleted` column, switch to `_a` view, otherwise use original table name
