@@ -721,17 +721,22 @@ class CompareTableIdsOperator(TableTransfer):
             dest_table += '_a'
 
         joined_cols = ",".join(id_cols)
-        src_sql = f'select distinct {joined_cols} from {src_table}'
-        dest_sql = f'select distinct {joined_cols} from {dest_table}'
 
         with self.source_db.connection as src_conn, self.dest_db.connection as dest_conn:
+            # get the data (ids only)
+            src_sql = f'select distinct {joined_cols} from {src_table}'
             self.log.info(f'Executing: {src_sql}')
             src_df = pd.read_sql(src_sql, src_conn)
 
+            dest_sql = f'select distinct {joined_cols} from {dest_table}'
             self.log.info(f'Executing: {dest_sql}')
             dest_df = pd.read_sql(dest_sql, dest_conn)
 
-            diff = src_df.merge(dest_df, on=id_cols, how='outer', indicator=True) \
+            # if any of id columns contain 'xxx as yyy' expression, take yyy as merge column name
+            merge_cols = [col if not ' as ' in col else col.split(' as ')[1].strip() for col in id_cols]
+
+            # merge the dataframes with direction indicator, then transform it to user-friendly form
+            diff = src_df.merge(dest_df, on=merge_cols, how='outer', indicator=True) \
                 .query('_merge != "both"') \
                 .assign(source=lambda df: df['_merge'].map({
                     'left_only': f'{self.source_conn_id}.{src_table}', 
