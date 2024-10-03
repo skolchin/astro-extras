@@ -297,7 +297,7 @@ class TableTransfer(GenericTransfer):
                 name=f'{full_name}',
                 facets={
                     "schema": SchemaDatasetFacet(
-                        fields=[SchemaField(name=col.name, type=str(col.type)) for col in table_def.columns],
+                        fields=[SchemaField(name=col.name, type=str(col.type), description=col.comment) for col in table_def.columns],
                     ),
                     "dataSource": DataSourceDatasetFacet(
                         name=full_name, uri=f"{ns}/{full_name}"

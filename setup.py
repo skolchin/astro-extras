@@ -12,7 +12,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setuptools.setup(
     name="astro_extras",
-    version="0.1.10",
+    version="0.1.10.1",
     author="Kol",
     author_email="skolchin@gmail.com",
     description="Additional Astro SDK operators",

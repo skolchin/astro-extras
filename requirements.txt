@@ -1,7 +1,6 @@
 apache-airflow[pandas,postgres]>=2.7.0
 astro-sdk-python[postgres]==1.8.1
 apache-airflow-providers-openlineage>=1.8.0
-openlineage-python>=1.14.0
+# openlineage-python>=1.14.0
 openpyxl>=3.0.0
 python-dateutil>=2.8.0
-# deprecated==1.2.14

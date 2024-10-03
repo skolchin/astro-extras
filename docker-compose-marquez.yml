@@ -1,5 +1,5 @@
 # Astro SDK Extras project
-# (c) kol, 2023
+# (c) kol, 2023-2024
 #
 # Airflow & Astro SDK docker compose file for Marquez OpenLineage server testing
 # Based on: https://datatalks.club/blog/how-to-setup-lightweight-local-version-for-airflow.html
@@ -24,6 +24,7 @@ x-airflow-common:
     AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: true
     AIRFLOW__CORE__LOAD_EXAMPLES: false
     AIRFLOW__CORE__DEFAULT_TIMEZONE: ${AIRFLOW_TIMEZONE:-}
+    AIRFLOW__CORE__TEST_CONNECTION: 'true'
     AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: 'airflow\..* astro\..* .*\.ETLSession'
     AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES_REGEXP: 'airflow\..* astro\..* .*\.ETLSession'
     AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
@@ -35,7 +36,6 @@ x-airflow-common:
     AIRFLOW__ASTRO_SDK__OPENLINEAGE_EMIT_TEMP_TABLE_EVENT: true
     AIRFLOW__ASTRO_SDK__POSTGRES_DEFAULT_SCHEMA: 'public'
     _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
-    AIRFLOW__LINEAGE__BACKEND: 'openlineage.lineage_backend.OpenLineageBackend'
     OPENLINEAGE_URL: http://marquez:5000
     OPENLINEAGE_NAMESPACE: 'default'
   user: "${AIRFLOW_UID:-50000}:0"
@@ -88,6 +88,21 @@ services:
     command: scheduler
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
       interval: 30s
       timeout: 10s
       retries: 5

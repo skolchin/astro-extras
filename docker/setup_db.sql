@@ -50,11 +50,16 @@ create table public.types(
     type_name text not null
 );
 comment on table public.types is 'Type dictionary table';
+comment on column public.types.type_id is 'Type ID';
+comment on column public.types.type_name is 'Type name';
 
 create table public.types2(
     type_id serial not null primary key,
     type_name text not null
 );
+comment on table public.types2 is 'Type dictionary table (copy)';
+comment on column public.types2.type_id is 'Type ID';
+comment on column public.types2.type_name is 'Type name';
 
 create table public.table_data(
     id serial not null primary key,
@@ -64,6 +69,11 @@ create table public.table_data(
     modified_ts timestamp null
 );
 comment on table public.table_data is 'Data table for standard style transfer';
+comment on column public.table_data.id is 'ID';
+comment on column public.table_data.type_id is 'Type ID';
+comment on column public.table_data.comments is 'Comments';
+comment on column public.table_data.created_ts is 'Creation timestamp';
+comment on column public.table_data.modified_ts is 'Modification timestamp';
 
 create table public.ods_data(
     id serial not null primary key,
@@ -73,6 +83,11 @@ create table public.ods_data(
     modified_ts timestamp null
 );
 comment on table public.ods_data is 'Data table for ODS-style transfer';
+comment on column public.ods_data.id is 'ID';
+comment on column public.ods_data.type_id is 'Type ID';
+comment on column public.ods_data.comments is 'Comments';
+comment on column public.ods_data.created_ts is 'Creation timestamp';
+comment on column public.ods_data.modified_ts is 'Modification timestamp';
 
 insert into public.types(type_id, type_name)
 values (1, 'Type 1'), (2, 'Type 2'), (3, 'Type 3');
@@ -122,12 +137,19 @@ create table stage.types(
     type_name text not null
 );
 comment on table stage.types is 'Staged types table';
+comment on column stage.types.session_id is 'Session ID';
+comment on column stage.types.type_id is 'Type ID';
+comment on column stage.types.type_name is 'Type name';
 
 create table stage.types2(
     session_id int not null references public.sessions(session_id),
     type_id int not null,
     type_name text not null
 );
+comment on table stage.types2 is 'Staged types table (copy)';
+comment on column stage.types2.session_id is 'Session ID';
+comment on column stage.types2.type_id is 'Type ID';
+comment on column stage.types2.type_name is 'Type name';
 
 create view stage.types_a as
     select distinct on (t.type_id) t.*
@@ -152,6 +174,12 @@ create table stage.table_data(
     modified_ts timestamp null
 );
 comment on table stage.table_data is 'Staged data table';
+comment on column stage.table_data.session_id is 'Session ID';
+comment on column stage.table_data.id is 'ID';
+comment on column stage.table_data.type_id is 'Type ID';
+comment on column stage.table_data.comments is 'Comments';
+comment on column stage.table_data.created_ts is 'Creation timestamp';
+comment on column stage.table_data.modified_ts is 'Modification timestamp';
 
 create view stage.table_data_a as
     select distinct on (t.id) t.*
@@ -172,6 +200,14 @@ create table stage.ods_data (
     modified_ts timestamp null
 );
 comment on table stage.ods_data is 'Staged ODS data table';
+comment on column stage.ods_data.session_id is 'Session ID';
+comment on column stage.ods_data._modified is 'ODS _modified timestamp';
+comment on column stage.ods_data._deleted is 'ODS _deleted timestamp';
+comment on column stage.ods_data.id is 'ID';
+comment on column stage.ods_data.type_id is 'Type ID';
+comment on column stage.ods_data.comments is 'Comments';
+comment on column stage.ods_data.created_ts is 'Creation timestamp';
+comment on column stage.ods_data.modified_ts is 'Modification timestamp';
 
 create view stage.ods_data_a as
     with d as (
@@ -203,6 +239,12 @@ create table actuals.table_data(
     modified_ts timestamp null
 );
 comment on table actuals.table_data is 'Actuals data table';
+comment on column actuals.table_data.id is 'ID';
+comment on column actuals.table_data.session_id is 'Session ID';
+comment on column actuals.table_data.type_id is 'Type ID';
+comment on column actuals.table_data.comments is 'Comments';
+comment on column actuals.table_data.created_ts is 'Creation timestamp';
+comment on column actuals.table_data.modified_ts is 'Modification timestamp';
 
 create table actuals.ods_data (
     id int not null primary key,
@@ -215,6 +257,14 @@ create table actuals.ods_data (
     modified_ts timestamp null
 );
 comment on table actuals.ods_data is 'Actuals ODS data table';
+comment on column actuals.ods_data.id is 'ID';
+comment on column actuals.ods_data.session_id is 'Session ID';
+comment on column actuals.ods_data._modified is 'ODS _modified timestamp';
+comment on column actuals.ods_data._deleted is 'ODS _deleted timestamp';
+comment on column actuals.ods_data.type_id is 'Type ID';
+comment on column actuals.ods_data.comments is 'Comments';
+comment on column actuals.ods_data.created_ts is 'Creation timestamp';
+comment on column actuals.ods_data.modified_ts is 'Modification timestamp';
 
 create view actuals.ods_data_a as select * from actuals.ods_data where "_deleted" is null order by id;
 comment on view actuals.ods_data_a is 'Actual data view for Actuals ODS data table';

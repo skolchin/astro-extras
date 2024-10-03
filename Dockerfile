@@ -1,6 +1,6 @@
 ARG REG_PROXY
 ARG AIRFLOW_UID=50000
-FROM ${REG_PROXY}apache/airflow:slim-2.10.1-python3.10
+FROM ${REG_PROXY}apache/airflow:slim-2.10.2-python3.10
 
 USER 0
 RUN apt-get update && apt-get install -qy nano gosu git locales && \
@@ -22,6 +22,9 @@ RUN pip install -e /tmp/astro_extras
 
 # this is to debug openlineage integration
 # COPY ./docker/ol_base_patched.py /home/airflow/.local/lib/python3.10/site-packages/airflow/providers/openlineage/extractors/base.py
+
+# this is a patch to restore correct handling of AstroSDK dataset URIs (they contain @ which is rejected by AF's code)
+COPY --chown=$AIRFLOW_UID:root ./docker/airflow_datasets_init.py /home/airflow/.local/lib/python3.10/site-packages/airflow/datasets/__init__.py
 
 USER 0
 COPY ./docker/airflow.cfg /opt/airflow/airflow.cfg

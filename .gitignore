@@ -6,6 +6,7 @@
 __pycache__/
 .pytest_cache/
 *.egg-info/
+.~lock*
 logs/
 plugins/
 dist/
