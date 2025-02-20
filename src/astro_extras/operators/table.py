@@ -40,7 +40,7 @@ DEFAULT_CHUNK_SIZE: int = 10000
 StageTransferMode = Literal['normal', 'compare', 'sync']
 """ Stage data transfer modes """
 
-ActualsTransferMode = Literal['update', 'replace', 'sync']
+ActualsTransferMode = Literal['update', 'replace', 'sync', 'update_only']
 """ Actuals data transfer modes """
 
 class TableTransfer(GenericTransfer):
@@ -545,7 +545,7 @@ class ActualsTableTransfer(TableTransfer):
                         source_to_target_columns_map=col_map,
                         target_conflict_columns=id_cols,
                         source_sql=sql,
-                        if_conflicts='update',
+                        if_conflicts='update_only' if self.mode == 'update_only' else 'update',
                         delete_strategy='logical' if self.mode == 'sync' else 'ignore'
                     )
                     self.log.info(f'{self._row_count} records transferred')
@@ -597,7 +597,7 @@ class ActualsTableTransfer(TableTransfer):
                             target_table=self.destination,
                             source_to_target_columns_map=col_map,
                             target_conflict_columns=id_cols,
-                            if_conflicts='update',
+                            if_conflicts='update_only' if self.mode == 'update_only' else 'update',
                             delete_strategy='logical' if self.mode == 'sync' else 'ignore'
                         )
                         self.log.info(f'{self._row_count} records transferred')

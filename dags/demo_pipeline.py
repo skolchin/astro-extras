@@ -81,7 +81,7 @@ with DAG(
         stage_tables[:-1], 
         actuals_tables[:-1], 
         session=session,
-        mode='update') >> \
+        mode='update_only') >> \
     transfer_actuals(
         fake_stage_tables[-1], 
         actuals_tables[-1], 

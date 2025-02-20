@@ -7,7 +7,7 @@ import logging
 from sqlalchemy import text, Column
 from psycopg2 import sql as postgres_sql
 from astro.table import BaseTable, TempTable
-from astro.constants import MergeConflictStrategy
+# from astro.constants import MergeConflictStrategy
 from sqlalchemy.engine.base import Connection as SqlaConnection
 from sqlalchemy.dialects.postgresql.base import PGDialect
 from typing import Literal, Tuple
@@ -18,8 +18,22 @@ def assert_is_postgres(conn: SqlaConnection):
     """ Check whether given connection is to a Postgres database. Raises `AssertException` if not. """
     assert isinstance(conn.dialect, PGDialect), f'{conn.engine.url} is not a Postgres connection'
 
+MergeConflictStrategy = Literal["ignore", "update", "exception", "update_only"]
+""" Generation strategy:
+        - ignore: generates INSERT statement wuth ON CONFLICT ... DO NOTHING
+        - update: generates INSERT statement with ON CONFLICT ... DO UPDATE ... on all fields
+        - exception: generates INSERT statement without ON CONFLICT clause 
+            (will cause failure upon conflicting records)
+        - update_only: generates UPDATE statement only
+"""
+
 MergeDeleteStrategy = Literal['ignore', 'logical', 'physical']
-""" Deletion strategy """
+""" Deletion strategy:
+        - ignore:   generates no DELETE statement
+        - logical:  generate UPDATE statement with '_deleted' column assignment
+            for missing records
+        - physical: generates DELETE statement for missing records
+ """
 
 def postgres_merge_tables(
         conn: SqlaConnection,
@@ -89,6 +103,42 @@ def postgres_merge_tables(
         )
         return query
 
+    def construct_update_query() -> str:
+        statement = (
+            "UPDATE {target_table} t SET {update_statements} " \
+            "FROM {source_table} q WHERE {where_condition}"
+        )
+
+        source_columns = list(source_to_target_columns_map.keys())
+        target_columns = list(source_to_target_columns_map.values())
+
+        source_column_names = [postgres_sql.Identifier(col) for col in source_columns]
+        target_column_names = [postgres_sql.Identifier(col) for col in target_columns]
+
+        update_statements = [
+            postgres_sql.SQL(
+                "{col_name} = q.{col_name}").format(
+                    col_name=col_name)
+                        for col_name in target_column_names
+        ]
+
+        where_condition = postgres_sql.SQL(" AND ".join(
+            ["t.{col_name} = q.{col_name}".format(
+                col_name=x)
+                    for x in target_conflict_columns]
+        ))
+            
+        query = postgres_sql.SQL(statement).format(
+            target_table=postgres_sql.Identifier(*identifier_args(target_table)),
+            source_table=postgres_sql.Identifier(*identifier_args(source_table)) if source_table \
+                        else postgres_sql.SQL("(" + source_sql.strip(' \n\r;') + ")"),
+            target_columns=postgres_sql.SQL(",").join(target_column_names),
+            source_columns=postgres_sql.SQL(",").join(source_column_names),
+            update_statements=postgres_sql.SQL(",").join(update_statements),
+            where_condition=where_condition,
+        )
+        return query
+
     def construct_delete_query() -> str:
         statement = (
             "DELETE FROM {target_table} WHERE {target_join_columns} NOT IN (SELECT {source_join_columns} FROM {source_table})"
@@ -124,15 +174,15 @@ def postgres_merge_tables(
         )
         return query
 
-    sql_list = []
+    sql_list = [
+        construct_upsert_query() if if_conflicts != 'update_only' else construct_update_query()
+    ]
     match delete_strategy:
         case 'ignore':
-            sql_list.append(construct_upsert_query())
+            pass
         case 'physical':
-            sql_list.append(construct_upsert_query())
             sql_list.append(construct_delete_query())
         case 'logical':
-            sql_list.append(construct_upsert_query())
             sql_list.append(construct_logical_delete_query())
 
     rowcounts = []
