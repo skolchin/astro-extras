@@ -120,7 +120,10 @@ class ETLSession:
                 else:
                     t2.task_group.set_upstream(t1)
 
-        close_session(self._actual_sesssion).set_downstream(aql.cleanup())
+        close_session(
+            self._actual_sesssion,
+            retries=self.retries,
+            retry_delay=self.retry_delay).set_downstream(aql.cleanup())
 
 class OpenSessionOperator(BaseOperator):
     """ Session opening operator. Normally is used within `open_session` function """
