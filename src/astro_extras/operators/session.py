@@ -19,7 +19,7 @@ from airflow.exceptions import AirflowException, AirflowFailException
 from airflow.settings import TIMEZONE
 from attr import define, field
 from astro import sql as aql
-from typing import Any, Tuple, cast
+from typing import Any, Tuple, cast, Union
 
 from ..utils.datetime_local import datetime_to_tz
 from ..utils.template import get_predefined_template
@@ -42,6 +42,10 @@ class ETLSession:
         period_end: Date and time of session period end as ISO-format string.
             See `open_session` for details.
         dag: DAG, where the session was created. Used only to pass DAG's reference throught.
+        retries: the number of retries that should be performed before failing the task
+        retry_delay: delay between retries, can be set as ``timedelta`` or
+            ``float`` seconds, which will be converted into ``timedelta``,
+            the default is ``timedelta(seconds=300)``
 
     Examples:
         Using `ETLSession` as context manager:
@@ -61,6 +65,8 @@ class ETLSession:
     period_start: str = field(default=None)
     period_end: str = field(default=None)
     dag: DAG = field(default=None)
+    retries: int = field(default=0)
+    retry_delay: Union[float, timedelta] = field(default=timedelta(seconds=300))
 
     def __attrs_post_init__(self) -> None:
         if not self.session_conn_id:
@@ -77,6 +83,8 @@ class ETLSession:
             'session_id': self.session_id,
             'period_start': self.period_start,
             'period_end': self.period_end,
+            'retries': self.retries,
+            'retry_delay': self.retry_delay,
         }
 
     @staticmethod
@@ -88,6 +96,8 @@ class ETLSession:
             session_id=data['session_id'],
             period_start=data['period_start'],
             period_end=data['period_end'],
+            retries=data['retries'],
+            retry_delay=data['retry_delay'],
         )
 
     def __enter__(self):
@@ -95,7 +105,9 @@ class ETLSession:
             source_conn_id=self.source_conn_id,
             destination_conn_id=self.destination_conn_id,
             session_conn_id=self.session_conn_id,
-            dag=self.dag)
+            dag=self.dag,
+            retries=self.retries,
+            retry_delay=self.retry_delay)
         return self._actual_sesssion
 
     def __exit__(self, type, value, traceback):
