@@ -352,12 +352,7 @@ def close_session(
         if upstream.task_group and not upstream.task_group.is_root:
             upstream = upstream.task_group
 
-    op = CloseSessionOperator(
-        dag=dag,
-        session=session,
-        retries=session.retries,
-        retry_delay=session.retry_delay,
-        **kwargs)
+    op = CloseSessionOperator(dag=dag, session=session, **kwargs)
     op.set_upstream(upstream)
     return XComArg(op)
 
