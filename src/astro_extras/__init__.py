@@ -1,7 +1,7 @@
 # Astro SDK Extras project
 # (c) kol, 2023-2024
 
-__version__ = '0.2.0'
+__version__ = '0.2.1'
 
 from .operators.session import (
     open_session, 
